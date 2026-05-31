@@ -1,0 +1,13 @@
+:root[data-theme="dark"] {
+  --qw-fg: #e5e7eb;
+  --qw-bg: #1f2937;
+  --qw-fg-muted: #9ca3af;
+  --qw-accent: #60a5fa;
+  --qw-border: #374151;
+  --qw-surface: #111827;
+  --qw-cm-keyword: #a78bfa;
+  --qw-cm-string: #34d399;
+  --qw-cm-comment: #6b7280;
+  --qw-cm-heading: #93c5fd;
+  --qw-selection-bg: #1e3a8a;
+}

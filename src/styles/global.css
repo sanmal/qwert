@@ -1,0 +1,21 @@
+@import "./tokens.css";
+@import "./theme-default.css";
+@import "./theme-high-contrast.css";
+@import "./theme-dark.css";
+@import "./theme-dark-high-contrast.css";
+@import "./editor.css";
+@import "./preview.css";
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--qw-bg);
+  color: var(--qw-fg);
+  font-family: var(--qw-font-family);
+  font-size: var(--qw-font-size);
+  line-height: var(--qw-line-height);
+}

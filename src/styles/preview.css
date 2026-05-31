@@ -1,0 +1,32 @@
+.preview-container {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+  background-color: var(--qw-bg);
+  color: var(--qw-fg);
+  font-family: var(--qw-font-family);
+  font-size: var(--qw-font-size);
+  line-height: var(--qw-line-height);
+  max-width: var(--qw-editor-max-width);
+}
+
+.preview-container p {
+  margin-block: var(--qw-paragraph-spacing);
+}
+
+.preview-container a {
+  color: var(--qw-accent);
+}
+
+.preview-container code {
+  background-color: var(--qw-surface);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+}
+
+.preview-container pre {
+  background-color: var(--qw-surface);
+  padding: 1em;
+  overflow-x: auto;
+  border-radius: 4px;
+}

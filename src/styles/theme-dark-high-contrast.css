@@ -1,0 +1,13 @@
+:root[data-theme="dark-high-contrast"] {
+  --qw-fg: #ffffff;
+  --qw-bg: #000000;
+  --qw-fg-muted: #d1d5db;
+  --qw-accent: #93c5fd;
+  --qw-border: #9ca3af;
+  --qw-surface: #111827;
+  --qw-cm-keyword: #c4b5fd;
+  --qw-cm-string: #6ee7b7;
+  --qw-cm-comment: #9ca3af;
+  --qw-cm-heading: #bfdbfe;
+  --qw-selection-bg: #1e40af;
+}

@@ -1,0 +1,7 @@
+:root[data-theme="default"] {
+  --qw-fg: #1a1a1a;
+  --qw-bg: #ffffff;
+  --qw-fg-muted: #6b7280;
+  --qw-border: #e5e7eb;
+  --qw-surface: #f9fafb;
+}

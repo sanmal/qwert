@@ -1,0 +1,12 @@
+:root[data-theme="high-contrast"] {
+  --qw-fg: #000000;
+  --qw-bg: #ffffff;
+  --qw-fg-muted: #4b5563;
+  --qw-accent: #1d4ed8;
+  --qw-border: #6b7280;
+  --qw-surface: #f3f4f6;
+  --qw-cm-keyword: #5b21b6;
+  --qw-cm-string: #065f46;
+  --qw-cm-comment: #374151;
+  --qw-cm-heading: #1e3a8a;
+}

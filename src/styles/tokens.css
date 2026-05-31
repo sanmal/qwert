@@ -1,0 +1,55 @@
+:root {
+  /* Typography */
+  --qw-font-family: system-ui, sans-serif;
+  --qw-font-size: 16px;
+  --qw-font-weight: 400;
+  --qw-line-height: 1.6;
+  --qw-letter-spacing: 0em;
+  --qw-word-spacing: 0em;
+  --qw-paragraph-spacing: 1.5em;
+  --qw-editor-max-width: 72ch;
+
+  /* Colors — default (light, WCAG AA) */
+  --qw-fg: #1a1a1a;
+  --qw-bg: #ffffff;
+  --qw-fg-muted: #6b7280;
+  --qw-accent: #2563eb;
+
+  /* Syntax highlight — Protanopia/Deuteranopia対応（明度差で区別） */
+  --qw-cm-keyword: #7c3aed;
+  --qw-cm-string: #059669;
+  --qw-cm-comment: #9ca3af;
+  --qw-cm-heading: #1e40af;
+  --qw-cm-link: var(--qw-accent);
+  --qw-cursor: var(--qw-fg);
+  --qw-selection-bg: #dbeafe;
+
+  /* UI */
+  --qw-sidebar-width: 240px;
+  --qw-border: #e5e7eb;
+  --qw-surface: #f9fafb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --qw-fg: #e5e7eb;
+    --qw-bg: #1f2937;
+    --qw-fg-muted: #9ca3af;
+    --qw-accent: #60a5fa;
+    --qw-border: #374151;
+    --qw-surface: #111827;
+    --qw-cm-keyword: #a78bfa;
+    --qw-cm-string: #34d399;
+    --qw-cm-comment: #6b7280;
+    --qw-cm-heading: #93c5fd;
+    --qw-selection-bg: #1e3a8a;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root:not([data-theme]) {
+    --qw-fg: #000000;
+    --qw-bg: #ffffff;
+    --qw-fg-muted: #374151;
+  }
+}
