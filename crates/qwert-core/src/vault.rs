@@ -1,0 +1,345 @@
+use notify::{EventKind, RecursiveMode, Watcher};
+use serde::{Deserialize, Serialize};
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
+use walkdir::WalkDir;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub children: Option<Vec<VaultEntry>>,
+}
+
+/// 監視ハンドル。drop されると監視スレッドと watcher が停止する。
+pub struct WatchGuard {
+    _watcher: notify::RecommendedWatcher,
+}
+
+/// 既存パス用: canonicalize して vault 配下か検証する。
+pub fn resolve_path(vault_root: &Path, relative: &str) -> crate::Result<PathBuf> {
+    let joined = vault_root.join(relative);
+    let canonical = joined
+        .canonicalize()
+        .map_err(|_| crate::CoreError::NotFound(relative.to_owned()))?;
+    if !canonical.starts_with(vault_root) {
+        return Err(crate::CoreError::PathTraversal(relative.to_owned()));
+    }
+    Ok(canonical)
+}
+
+/// 新規パス用: lexical 検証 + 親 canonicalize で vault 配下か検証する。
+/// 呼び出し前に親ディレクトリを create_dir_all しておくこと。
+pub fn resolve_new_path(vault_root: &Path, relative: &str) -> crate::Result<PathBuf> {
+    let rel = Path::new(relative);
+    if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(crate::CoreError::PathTraversal(relative.to_owned()));
+    }
+    let joined = vault_root.join(rel);
+    let parent = joined
+        .parent()
+        .ok_or_else(|| crate::CoreError::PathTraversal(relative.to_owned()))?;
+    let parent_canonical = parent.canonicalize().map_err(|_| {
+        crate::CoreError::NotFound(parent.to_string_lossy().into_owned())
+    })?;
+    if !parent_canonical.starts_with(vault_root) {
+        return Err(crate::CoreError::PathTraversal(relative.to_owned()));
+    }
+    let file_name = joined
+        .file_name()
+        .ok_or_else(|| crate::CoreError::PathTraversal(relative.to_owned()))?;
+    Ok(parent_canonical.join(file_name))
+}
+
+fn scan_dir(vault_root: &Path, dir: &Path) -> crate::Result<Vec<VaultEntry>> {
+    let mut entries = Vec::new();
+
+    for entry in WalkDir::new(dir)
+        .max_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.depth() == 1)
+    {
+        let path = entry.path().to_path_buf();
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        if entry.file_type().is_dir() {
+            if name.starts_with('.') || name == "node_modules" {
+                continue;
+            }
+            let children = scan_dir(vault_root, &path)?;
+            if !children.is_empty() {
+                let rel = path
+                    .strip_prefix(vault_root)
+                    .map(|r| r.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_default();
+                entries.push(VaultEntry {
+                    name,
+                    path: rel,
+                    is_dir: true,
+                    children: Some(children),
+                });
+            }
+        } else {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext == "md" || ext == "markdown" {
+                let rel = path
+                    .strip_prefix(vault_root)
+                    .map(|r| r.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_default();
+                entries.push(VaultEntry {
+                    name,
+                    path: rel,
+                    is_dir: false,
+                    children: None,
+                });
+            }
+        }
+    }
+
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(entries)
+}
+
+/// .md / .markdown のみをツリー形式で返す。隠しディレクトリと node_modules はスキップ。
+pub fn scan_vault(vault_root: &Path) -> crate::Result<Vec<VaultEntry>> {
+    scan_dir(vault_root, vault_root)
+}
+
+/// パストラバーサル検証付きのファイル読み取り（既存パス用）。
+pub fn read_file(vault_root: &Path, relative_path: &str) -> crate::Result<String> {
+    let resolved = resolve_path(vault_root, relative_path)?;
+    Ok(std::fs::read_to_string(resolved)?)
+}
+
+fn write_atomic(path: &Path, content: &str) -> crate::Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| crate::CoreError::PathTraversal(path.to_string_lossy().into_owned()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(content.as_bytes())?;
+    tmp.persist(path).map_err(|e| crate::CoreError::Io(e.error))?;
+    Ok(())
+}
+
+/// アトミック書き込み（tmp → rename）。既存・新規どちらのパスも扱う。
+pub fn write_file(vault_root: &Path, relative_path: &str, content: &str) -> crate::Result<()> {
+    let resolved = match resolve_path(vault_root, relative_path) {
+        Ok(p) => p,
+        Err(crate::CoreError::NotFound(_)) => {
+            let joined = vault_root.join(relative_path);
+            if let Some(parent) = joined.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            resolve_new_path(vault_root, relative_path)?
+        }
+        Err(e) => return Err(e),
+    };
+    write_atomic(&resolved, content)
+}
+
+/// 新規ファイル作成。すでに存在する場合は Io(AlreadyExists) を返す。
+pub fn create_file(vault_root: &Path, relative_path: &str) -> crate::Result<()> {
+    let rel = Path::new(relative_path);
+    if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(crate::CoreError::PathTraversal(relative_path.to_owned()));
+    }
+    let joined = vault_root.join(rel);
+    if let Some(parent) = joined.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let resolved = resolve_new_path(vault_root, relative_path)?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&resolved)?;
+    Ok(())
+}
+
+/// vault_root 配下を再帰監視し、変更のあった .md ファイルの
+/// vault 相対パス（`/` 区切り）ごとに callback を呼ぶ。
+/// callback はバックグラウンドスレッドから呼ばれる（Send + 'static 必須）。
+/// 返り値の guard を保持している間だけ監視が継続する（drop で停止）。
+pub fn watch_vault<F>(vault_root: &Path, callback: F) -> crate::Result<WatchGuard>
+where
+    F: Fn(String) + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel::<notify::Event>();
+
+    let mut watcher =
+        notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(event) = res {
+                let _ = tx.send(event);
+            }
+        })
+        .map_err(|e| crate::CoreError::Io(std::io::Error::other(e)))?;
+
+    watcher
+        .watch(vault_root, RecursiveMode::Recursive)
+        .map_err(|e| crate::CoreError::Io(std::io::Error::other(e)))?;
+
+    let vault_root = vault_root.to_path_buf();
+
+    std::thread::spawn(move || {
+        for event in rx {
+            match event.kind {
+                EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
+                    for path in &event.paths {
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        if (ext == "md" || ext == "markdown")
+                            && let Ok(relative) = path.strip_prefix(&vault_root)
+                        {
+                            let rel_str = relative.to_string_lossy().replace('\\', "/");
+                            callback(rel_str);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+
+    Ok(WatchGuard { _watcher: watcher })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn make_vault() -> TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn resolve_path_rejects_traversal() {
+        // vault は outer/inner/ — outer/secret.md は vault 外に実在するファイル
+        let outer = make_vault();
+        let inner = outer.path().join("inner");
+        fs::create_dir(&inner).unwrap();
+        let vault_root = inner.canonicalize().unwrap();
+        fs::write(outer.path().join("secret.md"), "secret").unwrap();
+
+        let result = resolve_path(&vault_root, "../secret.md");
+        assert!(
+            matches!(result, Err(crate::CoreError::PathTraversal(_))),
+            "expected PathTraversal, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_path_accepts_existing_file() {
+        let vault = make_vault();
+        let vault_root = vault.path().canonicalize().unwrap();
+        fs::write(vault_root.join("note.md"), "hello").unwrap();
+        let result = resolve_path(&vault_root, "note.md");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn resolve_new_path_rejects_parent_dir() {
+        let vault = make_vault();
+        let vault_root = vault.path().canonicalize().unwrap();
+        assert!(matches!(
+            resolve_new_path(&vault_root, "../evil.md"),
+            Err(crate::CoreError::PathTraversal(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_new_path_rejects_absolute() {
+        let vault = make_vault();
+        let vault_root = vault.path().canonicalize().unwrap();
+        assert!(matches!(
+            resolve_new_path(&vault_root, "/etc/passwd"),
+            Err(crate::CoreError::PathTraversal(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_new_path_accepts_vault_relative() {
+        let vault = make_vault();
+        let vault_root = vault.path().canonicalize().unwrap();
+        // parent (vault_root) must exist for canonicalize to succeed
+        let result = resolve_new_path(&vault_root, "new_note.md");
+        assert!(result.is_ok());
+        assert!(result.unwrap().starts_with(&vault_root));
+    }
+
+    #[test]
+    fn scan_vault_returns_only_md_files() {
+        let vault = make_vault();
+        let vault_root = vault.path().canonicalize().unwrap();
+
+        fs::write(vault_root.join("a.md"), "").unwrap();
+        fs::write(vault_root.join("b.txt"), "").unwrap();
+        fs::create_dir(vault_root.join("sub")).unwrap();
+        fs::write(vault_root.join("sub").join("c.md"), "").unwrap();
+        fs::write(vault_root.join("sub").join("d.rs"), "").unwrap();
+        fs::create_dir(vault_root.join(".git")).unwrap();
+        fs::write(vault_root.join(".git").join("e.md"), "").unwrap();
+
+        let entries = scan_vault(&vault_root).unwrap();
+
+        // top level: a.md + sub dir
+        assert_eq!(entries.len(), 2, "expected a.md and sub/: {entries:?}");
+        let file = entries.iter().find(|e| e.name == "a.md").unwrap();
+        assert!(!file.is_dir);
+
+        let dir = entries.iter().find(|e| e.name == "sub").unwrap();
+        assert!(dir.is_dir);
+        let children = dir.children.as_ref().unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].name, "c.md");
+
+        // .git must not appear
+        assert!(entries.iter().all(|e| e.name != ".git"));
+    }
+
+    #[test]
+    fn write_file_writes_content() {
+        let vault = make_vault();
+        let vault_root = vault.path().canonicalize().unwrap();
+        fs::write(vault_root.join("note.md"), "old").unwrap();
+
+        write_file(&vault_root, "note.md", "new content").unwrap();
+
+        let got = fs::read_to_string(vault_root.join("note.md")).unwrap();
+        assert_eq!(got, "new content");
+    }
+
+    #[test]
+    fn write_file_creates_new_file() {
+        let vault = make_vault();
+        let vault_root = vault.path().canonicalize().unwrap();
+
+        write_file(&vault_root, "fresh.md", "hello").unwrap();
+
+        let got = fs::read_to_string(vault_root.join("fresh.md")).unwrap();
+        assert_eq!(got, "hello");
+    }
+
+    #[test]
+    fn create_file_errors_on_existing() {
+        let vault = make_vault();
+        let vault_root = vault.path().canonicalize().unwrap();
+        fs::write(vault_root.join("exists.md"), "").unwrap();
+
+        let result = create_file(&vault_root, "exists.md");
+        assert!(
+            result.is_err(),
+            "expected error when creating existing file"
+        );
+    }
+
+    #[test]
+    fn create_file_succeeds_for_new() {
+        let vault = make_vault();
+        let vault_root = vault.path().canonicalize().unwrap();
+
+        create_file(&vault_root, "new.md").unwrap();
+        assert!(vault_root.join("new.md").exists());
+    }
+}
