@@ -1,5 +1,5 @@
 use qwert_core::appearance::{
-    contrast_ratio, global_config_path, load_global_appearance, save_global_appearance,
+    contrast_ratio, global_config_path, load_global_appearance, save_global_appearance, wcag_level,
     ALLOWED_PRESETS, APPEARANCE_TEMPLATE,
 };
 use qwert_core::error::ActionableError;
@@ -22,11 +22,8 @@ pub fn execute_contrast(args: ContrastArgs) -> i32 {
         Err(e) => return emit_core_error(&e),
     };
 
-    let aa = ratio >= 4.5;
-    let aaa = ratio >= 7.0;
-
-    // Assertions are checked before output; --assert-aaa takes precedence
-    if args.assert_aaa && !aaa {
+    // --assert-* use normal text thresholds (§14 注記どおり); checked before output.
+    if args.assert_aaa && ratio < 7.0 {
         let err = ActionableError::new(
             "validation",
             ExitCode::Validation as u8,
@@ -36,7 +33,7 @@ pub fn execute_contrast(args: ContrastArgs) -> i32 {
         eprintln!("{}", serde_json::to_string_pretty(&err).unwrap_or_default());
         return ExitCode::Validation.as_i32();
     }
-    if args.assert_aa && !aa {
+    if args.assert_aa && ratio < 4.5 {
         let err = ActionableError::new(
             "validation",
             ExitCode::Validation as u8,
@@ -47,6 +44,9 @@ pub fn execute_contrast(args: ContrastArgs) -> i32 {
         return ExitCode::Validation.as_i32();
     }
 
+    let level_normal = wcag_level(ratio, false);
+    let level_large = wcag_level(ratio, true);
+
     match args.format {
         OutputFormat::Json => {
             let obj = serde_json::json!({
@@ -55,15 +55,15 @@ pub fn execute_contrast(args: ContrastArgs) -> i32 {
                 "fg": args.fg,
                 "bg": args.bg,
                 "ratio": round2(ratio),
-                "aa": aa,
-                "aaa": aaa,
+                "level_normal": level_normal,
+                "level_large": level_large,
             });
             println!("{}", serde_json::to_string_pretty(&obj).unwrap_or_default());
         }
         _ => {
-            println!("contrast-ratio: {:.2}", ratio);
-            println!("WCAG AA:  {} (≥4.5)", if aa { "pass" } else { "fail" });
-            println!("WCAG AAA: {} (≥7.0)", if aaa { "pass" } else { "fail" });
+            println!("Contrast: {:.2}:1", ratio);
+            println!("Normal text: {level_normal} (threshold 7:1)");
+            println!("Large text:  {level_large} (threshold 4.5:1)");
         }
     }
 
@@ -142,13 +142,22 @@ pub fn execute_set(args: SetArgs) -> i32 {
         }
     }
 
-    // --require-aa: check contrast when custom fg/bg are provided
-    if args.require_aa && has_fg && has_bg {
+    // Compute contrast for custom fg/bg (needed for --require-aa, warning, and output).
+    let custom_contrast: Option<f64> = if has_fg && has_bg {
         let fg = args.fg.as_deref().unwrap_or("");
         let bg = args.bg.as_deref().unwrap_or("");
         match contrast_ratio(fg, bg) {
+            Ok(r) => Some(r),
             Err(e) => return emit_core_error(&e),
-            Ok(ratio) if ratio < 4.5 => {
+        }
+    } else {
+        None
+    };
+
+    // --require-aa: reject before writing if contrast is below AA.
+    if args.require_aa {
+        if let Some(ratio) = custom_contrast {
+            if ratio < 4.5 {
                 let err = ActionableError::new(
                     "validation",
                     ExitCode::Validation as u8,
@@ -158,7 +167,6 @@ pub fn execute_set(args: SetArgs) -> i32 {
                 eprintln!("{}", serde_json::to_string_pretty(&err).unwrap_or_default());
                 return ExitCode::Validation.as_i32();
             }
-            Ok(_) => {}
         }
     }
 
@@ -181,6 +189,13 @@ pub fn execute_set(args: SetArgs) -> i32 {
         return emit_core_error(&e);
     }
 
+    // Warn when custom contrast is below WCAG AA (write already succeeded).
+    if let Some(ratio) = custom_contrast {
+        if ratio < 4.5 {
+            eprintln!("warning: contrast {ratio:.2}:1 is below WCAG AA (4.5:1)");
+        }
+    }
+
     let path = global_config_path()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "<unknown>".to_owned());
@@ -194,25 +209,33 @@ pub fn execute_set(args: SetArgs) -> i32 {
             } else {
                 serde_json::json!({})
             };
-            let obj = serde_json::json!({
+            let mut obj = serde_json::json!({
                 "schema_version": "v1",
                 "kind": "appearance_set",
                 "path": path,
                 "changes": changes,
             });
+            if let Some(ratio) = custom_contrast {
+                obj["contrast"] = serde_json::json!({
+                    "ratio": round2(ratio),
+                    "level_normal": wcag_level(ratio, false),
+                });
+            }
             println!("{}", serde_json::to_string_pretty(&obj).unwrap_or_default());
         }
         _ => {
             if let Some(ref p) = args.preset {
-                println!("appearance set: preset={p} saved to {path}");
-            } else if has_fg {
+                println!("Set preset={p} in {path}");
+            } else if let Some(ratio) = custom_contrast {
+                let level = wcag_level(ratio, false);
                 println!(
-                    "appearance set: fg={} bg={} saved to {path}",
+                    "Set fg={} bg={} (contrast {:.2}:1, {level}) in {path}",
                     args.fg.as_deref().unwrap_or(""),
-                    args.bg.as_deref().unwrap_or("")
+                    args.bg.as_deref().unwrap_or(""),
+                    ratio,
                 );
             } else {
-                println!("appearance set: no changes, config saved to {path}");
+                println!("Set (no changes) in {path}");
             }
         }
     }
@@ -237,4 +260,54 @@ pub fn execute_template(format: OutputFormat) -> i32 {
         }
     }
     ExitCode::Success.as_i32()
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qwert_core::appearance::wcag_level;
+
+    #[test]
+    fn contrast_json_schema_has_level_fields_no_aa_aaa() {
+        let ratio = 16.1_f64;
+        let obj = serde_json::json!({
+            "schema_version": "v1",
+            "kind": "contrast_result",
+            "fg": "#000000",
+            "bg": "#ffffff",
+            "ratio": round2(ratio),
+            "level_normal": wcag_level(ratio, false),
+            "level_large": wcag_level(ratio, true),
+        });
+        assert!(obj.get("level_normal").is_some(), "level_normal must exist");
+        assert!(obj.get("level_large").is_some(), "level_large must exist");
+        assert!(obj.get("aa").is_none(), "aa must not exist");
+        assert!(obj.get("aaa").is_none(), "aaa must not exist");
+        assert_eq!(obj["level_normal"], "AAA");
+        assert_eq!(obj["level_large"], "AAA");
+    }
+
+    #[test]
+    fn contrast_json_schema_aa_level_values() {
+        let ratio = 5.0_f64;
+        let obj = serde_json::json!({
+            "level_normal": wcag_level(ratio, false),
+            "level_large": wcag_level(ratio, true),
+        });
+        assert_eq!(obj["level_normal"], "AA");
+        assert_eq!(obj["level_large"], "AAA");
+    }
+
+    #[test]
+    fn contrast_json_schema_fail_level_values() {
+        let ratio = 2.0_f64;
+        let obj = serde_json::json!({
+            "level_normal": wcag_level(ratio, false),
+            "level_large": wcag_level(ratio, true),
+        });
+        assert_eq!(obj["level_normal"], "fail");
+        assert_eq!(obj["level_large"], "fail");
+    }
 }

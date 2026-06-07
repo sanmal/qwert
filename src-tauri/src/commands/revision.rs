@@ -1,7 +1,7 @@
 use crate::AppState;
 use qwert_core::revision::{self, NamingStyle, RevisionRequest};
-use qwert_core::vault;
 use qwert_core::revision_diff;
+use qwert_core::vault;
 use serde::Serialize;
 use tauri::State;
 
@@ -50,7 +50,13 @@ pub fn plan_revision_note(
     // A4: validate path is inside the vault before use (resolve_path uses canonicalize).
     vault::resolve_path(&root, &path).map_err(|e| e.to_string())?;
 
-    let naming_style = parse_naming(&naming);
+    let config = qwert_core::config::load_global_config();
+    let naming_str = if naming.is_empty() {
+        config.revision.naming.as_str()
+    } else {
+        naming.as_str()
+    };
+    let naming_style = parse_naming(naming_str)?;
     let date_str = if naming_style == NamingStyle::Date {
         Some(today_yyyymmdd())
     } else {
@@ -62,7 +68,7 @@ pub fn plan_revision_note(
         source_rel_path: path,
         naming: naming_style,
         new_name: name,
-        excluded_dirs: vec![],
+        excluded_dirs: config.revision.excluded_dirs.clone(),
         date_str,
     };
 
@@ -109,7 +115,13 @@ pub fn execute_revision_note(
     // A4: validate path is inside the vault before use.
     vault::resolve_path(&root, &path).map_err(|e| e.to_string())?;
 
-    let naming_style = parse_naming(&naming);
+    let config = qwert_core::config::load_global_config();
+    let naming_str = if naming.is_empty() {
+        config.revision.naming.as_str()
+    } else {
+        naming.as_str()
+    };
+    let naming_style = parse_naming(naming_str)?;
     let date_str = if naming_style == NamingStyle::Date {
         Some(today_yyyymmdd())
     } else {
@@ -121,7 +133,7 @@ pub fn execute_revision_note(
         source_rel_path: path,
         naming: naming_style,
         new_name: name,
-        excluded_dirs: vec![],
+        excluded_dirs: config.revision.excluded_dirs.clone(),
         date_str,
     };
 
@@ -136,12 +148,15 @@ pub fn execute_revision_note(
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
-fn parse_naming(s: &str) -> NamingStyle {
+fn parse_naming(s: &str) -> Result<NamingStyle, String> {
     match s {
-        "date" => NamingStyle::Date,
-        "semver" => NamingStyle::Semver,
-        "manual" => NamingStyle::Manual,
-        _ => NamingStyle::Increment,
+        "increment" => Ok(NamingStyle::Increment),
+        "date" => Ok(NamingStyle::Date),
+        "semver" => Ok(NamingStyle::Semver),
+        "manual" => Ok(NamingStyle::Manual),
+        _ => Err(format!(
+            "Invalid naming style '{s}'. Use one of: increment | date | semver | manual"
+        )),
     }
 }
 

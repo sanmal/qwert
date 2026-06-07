@@ -129,8 +129,8 @@ pub enum Command {
         diff: bool,
         #[arg(long, default_value = "text")]
         format: OutputFormat,
-        #[arg(long, default_value = "increment")]
-        naming: CliNamingStyle,
+        #[arg(long)]
+        naming: Option<CliNamingStyle>,
         #[arg(long)]
         name: Option<String>,
         #[arg(long)]
@@ -220,9 +220,9 @@ pub enum NoteCmd {
         /// Output format: text (default) | json | diff
         #[arg(long, default_value = "text")]
         format: OutputFormat,
-        /// Naming style [default: increment]
-        #[arg(long, default_value = "increment")]
-        naming: CliNamingStyle,
+        /// Naming style (default: read from config.toml)
+        #[arg(long)]
+        naming: Option<CliNamingStyle>,
         /// Explicit new name (required when --naming=manual)
         #[arg(long)]
         name: Option<String>,
@@ -320,7 +320,7 @@ fn dispatch(command: Command, vault_root: &Path) -> i32 {
                 if_match,
                 format,
             } => file::execute_write(&path, yes, if_match, format, vault_root),
-            FileCmd::List { tree: _, format } => file::execute_list(format, vault_root),
+            FileCmd::List { tree, format } => file::execute_list(tree, format, vault_root),
         },
 
         Command::Note { cmd } => match cmd {
@@ -343,7 +343,7 @@ fn dispatch(command: Command, vault_root: &Path) -> i32 {
                     dry_run,
                     diff_flag: diff,
                     format,
-                    naming: naming.into(),
+                    naming: naming.map(Into::into),
                     name,
                     yes,
                 },
@@ -401,7 +401,7 @@ fn dispatch(command: Command, vault_root: &Path) -> i32 {
             if_match,
             format,
         } => file::execute_write(&path, yes, if_match, format, vault_root),
-        Command::List { tree: _, format } => file::execute_list(format, vault_root),
+        Command::List { tree, format } => file::execute_list(tree, format, vault_root),
         Command::Render { path, format } => note::execute_render(&path, format, vault_root),
         Command::Backlinks { path, format } => note::execute_backlinks(&path, format, vault_root),
         Command::Revision {
@@ -418,7 +418,7 @@ fn dispatch(command: Command, vault_root: &Path) -> i32 {
                 dry_run,
                 diff_flag: diff,
                 format,
-                naming: naming.into(),
+                naming: naming.map(Into::into),
                 name,
                 yes,
             },
@@ -659,7 +659,8 @@ mod tests {
     }
 
     #[test]
-    fn note_revision_default_naming_is_increment() {
+    fn note_revision_naming_none_when_not_specified() {
+        // When --naming is omitted, naming is None (resolved from config at runtime).
         let cli = Cli::parse_from(["qwert", "note", "revision", "auth.md"]);
         let Command::Note {
             cmd: NoteCmd::Revision { naming, .. },
@@ -667,7 +668,19 @@ mod tests {
         else {
             panic!("wrong command");
         };
-        assert_eq!(naming, CliNamingStyle::Increment);
+        assert_eq!(naming, None);
+    }
+
+    #[test]
+    fn note_revision_naming_some_when_specified() {
+        let cli = Cli::parse_from(["qwert", "note", "revision", "auth.md", "--naming", "date"]);
+        let Command::Note {
+            cmd: NoteCmd::Revision { naming, .. },
+        } = cli.command
+        else {
+            panic!("wrong command");
+        };
+        assert_eq!(naming, Some(CliNamingStyle::Date));
     }
 
     #[test]
@@ -736,7 +749,7 @@ mod tests {
         else {
             panic!("wrong command");
         };
-        assert_eq!(naming, CliNamingStyle::Manual);
+        assert_eq!(naming, Some(CliNamingStyle::Manual));
         assert_eq!(name, Some("auth_jwt".to_owned()));
     }
 

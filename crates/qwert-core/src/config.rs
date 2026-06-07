@@ -1,5 +1,27 @@
 use serde::{Deserialize, Serialize};
 
+pub fn load_global_config() -> Config {
+    let Some(dirs) = directories::ProjectDirs::from("", "", "qwert") else {
+        return Config::default();
+    };
+    load_config_from_path(&dirs.config_dir().join("config.toml"))
+}
+
+pub fn load_config_from_path(path: &std::path::Path) -> Config {
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Config::default(),
+        Err(_) => return Config::default(),
+    };
+    match toml::from_str(&content) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("config.toml: parse error, using defaults");
+            Config::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -144,5 +166,39 @@ mod tests {
     fn sanitize_section_parsed_from_toml() {
         let c: Config = toml::from_str("[sanitize]\nwarn_invisible_chars = false").unwrap();
         assert!(!c.sanitize.warn_invisible_chars);
+    }
+
+    #[test]
+    fn load_config_from_path_nonexistent_returns_defaults() {
+        let c = load_config_from_path(std::path::Path::new(
+            "/nonexistent/__qwert_test__/config.toml",
+        ));
+        assert_eq!(c.general.autosave_delay_ms, 3000);
+        assert_eq!(c.revision.naming, "increment");
+        assert!(c.sanitize.warn_invisible_chars);
+    }
+
+    #[test]
+    fn load_config_from_path_valid_toml_parses() {
+        use std::io::Write as _;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            tmp,
+            "[revision]\nnaming = \"date\"\nexcluded_dirs = [\"archive\"]"
+        )
+        .unwrap();
+        let c = load_config_from_path(tmp.path());
+        assert_eq!(c.revision.naming, "date");
+        assert_eq!(c.revision.excluded_dirs, vec!["archive"]);
+    }
+
+    #[test]
+    fn load_config_from_path_invalid_toml_returns_defaults() {
+        use std::io::Write as _;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "this is not valid toml = {{").unwrap();
+        let c = load_config_from_path(tmp.path());
+        assert_eq!(c.general.autosave_delay_ms, 3000);
+        assert_eq!(c.revision.naming, "increment");
     }
 }

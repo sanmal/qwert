@@ -84,7 +84,8 @@ pub struct RevisionArgs {
     pub dry_run: bool,
     pub diff_flag: bool,
     pub format: OutputFormat,
-    pub naming: NamingStyle,
+    /// `None` means "read from config.revision.naming".
+    pub naming: Option<NamingStyle>,
     pub name: Option<String>,
     pub yes: bool,
 }
@@ -95,8 +96,9 @@ pub struct RevisionArgs {
 /// - `--format diff`: print unified diff to stdout (implies dry-run).
 /// - `--dry-run [--diff]`: print plan JSON; if `--diff` also write diff to a temp file
 ///   and add `diff_path` to the JSON.
-/// - `--yes` (or TTY): execute revision via WAL.
+/// - real execution: TTY + confirm_before_execute → prompt; --yes → skip prompt.
 pub fn execute_revision(args: RevisionArgs, vault_root: &Path) -> i32 {
+    let config = qwert_core::config::load_global_config();
     let RevisionArgs {
         path,
         dry_run,
@@ -106,17 +108,15 @@ pub fn execute_revision(args: RevisionArgs, vault_root: &Path) -> i32 {
         name,
         yes,
     } = args;
-    // Non-TTY guard: real execution requires --yes.
-    if !dry_run && format != OutputFormat::Diff && !yes && !super::tty::is_tty() {
-        let err = qwert_core::error::ActionableError::new(
-            "usage",
-            ExitCode::Usage as u8,
-            "Non-interactive context: --yes is required to apply revision",
-        )
-        .with_next_step("Add --yes flag, or use --dry-run to preview");
-        eprintln!("{}", serde_json::to_string_pretty(&err).unwrap_or_default());
-        return ExitCode::Usage.as_i32();
-    }
+
+    // Resolve naming: use config default when not explicitly specified.
+    let naming = match naming {
+        Some(n) => n,
+        None => match naming_style_from_str(&config.revision.naming) {
+            Ok(n) => n,
+            Err(code) => return code,
+        },
+    };
 
     let date_str = if naming == NamingStyle::Date {
         Some(today_yyyymmdd())
@@ -129,17 +129,41 @@ pub fn execute_revision(args: RevisionArgs, vault_root: &Path) -> i32 {
         source_rel_path: path.to_owned(),
         naming,
         new_name: name,
-        excluded_dirs: vec![],
+        excluded_dirs: config.revision.excluded_dirs.clone(),
         date_str,
     };
 
-    // Diff-only output (implies dry-run).
+    // Diff-only output (implies dry-run) — no confirmation needed.
     if format == OutputFormat::Diff {
         return dry_run_diff_to_stdout(&req, vault_root);
     }
 
     if dry_run {
         return dry_run_json(&req, vault_root, diff_flag, format);
+    }
+
+    // Real execution: TTY / non-TTY / confirm guard.
+    let is_tty = super::tty::is_tty();
+    if !yes && !is_tty {
+        // Non-interactive context: --yes required.
+        let err = qwert_core::error::ActionableError::new(
+            "usage",
+            ExitCode::Usage as u8,
+            "Non-interactive context: --yes is required to apply revision",
+        )
+        .with_next_step("Add --yes flag, or use --dry-run to preview");
+        eprintln!("{}", serde_json::to_string_pretty(&err).unwrap_or_default());
+        return ExitCode::Usage.as_i32();
+    }
+    if should_prompt(is_tty, yes, config.revision.confirm_before_execute) {
+        match prompt_confirm(&req) {
+            Ok(true) => {}
+            Ok(false) => {
+                eprintln!("Aborted.");
+                return ExitCode::Success.as_i32();
+            }
+            Err(code) => return code,
+        }
     }
 
     // Execute.
@@ -237,6 +261,51 @@ pub fn execute_scan(path: &str, format: OutputFormat, vault_root: &Path) -> i32 
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Returns true when an interactive confirmation prompt should be shown.
+fn should_prompt(is_tty: bool, yes: bool, confirm_cfg: bool) -> bool {
+    !yes && is_tty && confirm_cfg
+}
+
+/// Show a plan summary and ask `Execute? [y/N]`. Returns `Ok(true)` on `y`/`Y`.
+fn prompt_confirm(req: &RevisionRequest) -> Result<bool, i32> {
+    let plan = match revision::plan_revision(req) {
+        Ok(p) => p,
+        Err(ref e) => return Err(super::emit_core_error(e)),
+    };
+    println!("Revision: {} → {}", plan.old_path, plan.new_path);
+    println!(
+        "Affects: {} file(s) ({} wikilink(s))",
+        plan.affected_files.len(),
+        plan.total_wikilinks
+    );
+    use std::io::Write as _;
+    print!("Execute? [y/N] ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).ok();
+    Ok(matches!(line.trim(), "y" | "Y"))
+}
+
+/// Convert a naming style string to NamingStyle; exit 5 on unknown values.
+fn naming_style_from_str(s: &str) -> Result<NamingStyle, i32> {
+    match s {
+        "increment" => Ok(NamingStyle::Increment),
+        "date" => Ok(NamingStyle::Date),
+        "semver" => Ok(NamingStyle::Semver),
+        "manual" => Ok(NamingStyle::Manual),
+        _ => {
+            let err = qwert_core::error::ActionableError::new(
+                "validation",
+                ExitCode::Validation as u8,
+                format!("Unknown naming style: {s}"),
+            )
+            .with_next_step("Use one of: increment | date | semver | manual");
+            eprintln!("{}", serde_json::to_string_pretty(&err).unwrap_or_default());
+            Err(ExitCode::Validation.as_i32())
+        }
+    }
+}
 
 fn dry_run_diff_to_stdout(req: &RevisionRequest, vault_root: &Path) -> i32 {
     let plan = match revision::plan_revision(req) {
@@ -344,6 +413,28 @@ fn days_to_ymd(z: u32) -> (u32, u32, u32) {
 mod tests {
     use super::*;
 
+    // ── should_prompt ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn should_prompt_tty_no_yes_confirm_true() {
+        assert!(should_prompt(true, false, true));
+    }
+
+    #[test]
+    fn should_prompt_yes_flag_suppresses() {
+        assert!(!should_prompt(true, true, true));
+    }
+
+    #[test]
+    fn should_prompt_non_tty_suppresses() {
+        assert!(!should_prompt(false, false, true));
+    }
+
+    #[test]
+    fn should_prompt_confirm_cfg_false_suppresses() {
+        assert!(!should_prompt(true, false, false));
+    }
+
     // ── today_yyyymmdd ────────────────────────────────────────────────────────
 
     #[test]
@@ -442,6 +533,81 @@ mod tests {
         assert_eq!(v["old_path"], "auth.md");
         assert_eq!(v["new_path"], "auth_2.md");
         assert_eq!(v["total_wikilinks"], 1);
+    }
+
+    // ── excluded_dirs ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn plan_revision_respects_excluded_dirs() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        fs::create_dir(root.join("archive")).unwrap();
+        fs::write(root.join("auth.md"), "# Auth\n").unwrap();
+        fs::write(root.join("index.md"), "[[auth]] ref\n").unwrap();
+        fs::write(root.join("archive").join("old.md"), "[[auth]] archived\n").unwrap();
+
+        let req = RevisionRequest {
+            vault_root: root.clone(),
+            source_rel_path: "auth.md".into(),
+            naming: NamingStyle::Increment,
+            new_name: None,
+            excluded_dirs: vec!["archive".to_owned()],
+            date_str: None,
+        };
+
+        let plan = qwert_core::revision::plan_revision(&req).unwrap();
+        let paths: Vec<&str> = plan
+            .affected_files
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect();
+        assert!(paths.contains(&"index.md"), "index.md must be in plan");
+        assert!(
+            !paths.iter().any(|p| p.starts_with("archive/")),
+            "archive/ must be excluded from plan: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn execute_revision_respects_excluded_dirs() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        fs::create_dir(root.join("archive")).unwrap();
+        fs::write(root.join("auth.md"), "# Auth\n").unwrap();
+        fs::write(root.join("index.md"), "[[auth]] ref\n").unwrap();
+        fs::write(root.join("archive").join("old.md"), "[[auth]] archived\n").unwrap();
+
+        let req = RevisionRequest {
+            vault_root: root.clone(),
+            source_rel_path: "auth.md".into(),
+            naming: NamingStyle::Increment,
+            new_name: None,
+            excluded_dirs: vec!["archive".to_owned()],
+            date_str: None,
+        };
+
+        let result = qwert_core::revision::execute_revision(&req).unwrap();
+        assert_eq!(result.new_path, "auth_2.md");
+
+        // archived file must NOT be updated
+        let archived = fs::read_to_string(root.join("archive").join("old.md")).unwrap();
+        assert!(
+            archived.contains("[[auth]]"),
+            "archive/old.md must not be updated: {archived}"
+        );
+
+        // included file must be updated
+        let index = fs::read_to_string(root.join("index.md")).unwrap();
+        assert!(
+            index.contains("[[auth_2]]"),
+            "index.md must be updated: {index}"
+        );
     }
 
     // ── conflict exit code ────────────────────────────────────────────────────

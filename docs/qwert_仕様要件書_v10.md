@@ -626,7 +626,7 @@ qwertが行うのは「このファイルにあるはずのない文字が存在
 
 | 層 | 内容 | 判断 | Phase |
 |---|------|-----|------|
-| 第1層 | Unicode Tag（U+E0000〜E007F）、Null byte（U+0000）、C0制御文字のうちTab/LF/CR以外（U+0001〜0008, U+000E〜001F）、C1制御文字（U+0080〜009F） | 正当な理由ゼロ、無条件で検出・警告 | **Phase 2 で実装** |
+| 第1層 | Unicode Tag（U+E0000〜E007F）、Null byte（U+0000）、C0制御文字のうちTab/LF/CR以外（U+0001〜0008, U+000B〜000C, U+000E〜001F）、C1制御文字（U+0080〜009F） | 正当な理由ゼロ、無条件で検出・警告 | **Phase 2 で実装** |
 | 第2層 | ZWJ（U+200D）、BiDi制御文字（U+202A〜202E, U+2066〜2069）、BOM（U+FEFF、文中のみ）、Variation Selector（U+FE00〜FE0F） | 文脈依存、絵文字シーケンス・多言語テキストでは正当 | Phase 5 発展機能で段階的に対応 |
 | 第3層 | 不正なUTF-8シーケンス（オーバーロングエンコーディング等） | `read_to_string` のエラーハンドリング拡充として自然対応 | Phase 2 |
 
@@ -658,7 +658,7 @@ pub struct InvisibleCharFinding {
 pub enum InvisibleCharCategory {
     UnicodeTag,      // U+E0000〜U+E007F
     NullByte,        // U+0000
-    C0Control,       // U+0001〜0008, 000E〜001F
+    C0Control,       // U+0001〜0008, 000B〜000C, 000E〜001F
     C1Control,       // U+0080〜009F
 }
 

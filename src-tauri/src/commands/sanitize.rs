@@ -31,8 +31,13 @@ fn to_dto(f: &sanitize::InvisibleCharFinding) -> ScanFinding {
 }
 
 /// Scan a single file for invisible characters.
+/// Respects `sanitize.warn_invisible_chars`; returns empty when suppressed by config.
 #[tauri::command]
 pub fn scan_note(path: String, state: State<'_, AppState>) -> Result<Vec<ScanFinding>, String> {
+    let config = qwert_core::config::load_global_config();
+    if !config.sanitize.warn_invisible_chars {
+        return Ok(vec![]);
+    }
     let root_lock = state.vault_root.lock().unwrap();
     let root = root_lock.as_ref().ok_or("No vault open")?;
     let content = vault::read_file(root, &path).map_err(|e| e.to_string())?;
@@ -43,8 +48,13 @@ pub fn scan_note(path: String, state: State<'_, AppState>) -> Result<Vec<ScanFin
 }
 
 /// Scan all .md files in the vault; return only files that have findings.
+/// Respects `sanitize.warn_invisible_chars`; returns empty when suppressed by config.
 #[tauri::command]
 pub fn scan_vault_files(state: State<'_, AppState>) -> Result<Vec<FileScanResult>, String> {
+    let config = qwert_core::config::load_global_config();
+    if !config.sanitize.warn_invisible_chars {
+        return Ok(vec![]);
+    }
     let root_lock = state.vault_root.lock().unwrap();
     let root = root_lock.as_ref().ok_or("No vault open")?;
 

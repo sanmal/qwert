@@ -286,6 +286,28 @@ pub fn contrast_ratio(fg_hex: &str, bg_hex: &str) -> crate::Result<f64> {
     Ok((lighter + 0.05) / (darker + 0.05))
 }
 
+/// WCAG 2.x conformance level for a contrast ratio.
+///
+/// - normal text: `≥7.0`→`"AAA"`, `≥4.5`→`"AA"`, else `"fail"`.
+/// - large text:  `≥4.5`→`"AAA"`, `≥3.0`→`"AA"`, else `"fail"`.
+pub fn wcag_level(ratio: f64, large: bool) -> &'static str {
+    if large {
+        if ratio >= 4.5 {
+            "AAA"
+        } else if ratio >= 3.0 {
+            "AA"
+        } else {
+            "fail"
+        }
+    } else if ratio >= 7.0 {
+        "AAA"
+    } else if ratio >= 4.5 {
+        "AA"
+    } else {
+        "fail"
+    }
+}
+
 // ─── Persistence ──────────────────────────────────────────────────────────────
 
 /// Absolute path to the global `appearance.toml` (may not exist yet).
@@ -512,5 +534,27 @@ mod tests {
         // theme-dark.css: fg=#e5e7eb bg=#1f2937
         let r = contrast_ratio("#e5e7eb", "#1f2937").unwrap();
         assert!(r >= 4.5, "dark preset should be AA, got {r:.2}");
+    }
+
+    // ── wcag_level ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn wcag_level_normal_boundaries() {
+        assert_eq!(wcag_level(7.0, false), "AAA");
+        assert_eq!(wcag_level(6.99, false), "AA");
+        assert_eq!(wcag_level(4.5, false), "AA");
+        assert_eq!(wcag_level(4.49, false), "fail");
+        assert_eq!(wcag_level(3.0, false), "fail");
+        assert_eq!(wcag_level(2.99, false), "fail");
+    }
+
+    #[test]
+    fn wcag_level_large_boundaries() {
+        assert_eq!(wcag_level(7.0, true), "AAA");
+        assert_eq!(wcag_level(6.99, true), "AAA");
+        assert_eq!(wcag_level(4.5, true), "AAA");
+        assert_eq!(wcag_level(4.49, true), "AA");
+        assert_eq!(wcag_level(3.0, true), "AA");
+        assert_eq!(wcag_level(2.99, true), "fail");
     }
 }

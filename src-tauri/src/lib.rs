@@ -12,6 +12,8 @@ pub struct AppState {
     pub recent_writes: Arc<Mutex<HashMap<String, Instant>>>,
     // B3: 監視ハンドル。保持している間だけ監視が続く（t09 で設定）。
     pub watch_guard: Mutex<Option<qwert_core::vault::WatchGuard>>,
+    // T2: 現在 asset プロトコルを許可している vault パス（切替時に旧パスを forbid するため）。
+    pub allowed_vault: Mutex<Option<PathBuf>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -22,6 +24,7 @@ pub fn run() {
             vault_root: Mutex::new(None),
             recent_writes: Arc::new(Mutex::new(HashMap::new())),
             watch_guard: Mutex::new(None),
+            allowed_vault: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             commands::file::list_dir,

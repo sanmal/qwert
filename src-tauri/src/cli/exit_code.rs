@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn io_maps_to_1() {
-        let e = CoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, "io"));
+        let e = CoreError::Io(std::io::Error::other("io"));
         assert_eq!(ExitCode::from(&e), ExitCode::General);
     }
 

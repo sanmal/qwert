@@ -8,7 +8,7 @@ pub enum InvisibleCharCategory {
     /// Null byte: U+0000
     NullByte,
     /// C0 control characters except Tab (U+0009), LF (U+000A), CR (U+000D):
-    /// U+0001–U+0008 and U+000E–U+001F
+    /// U+0001–U+0008, U+000B–U+000C, U+000E–U+001F (VT/FF を含む)
     C0Control,
     /// C1 control characters: U+0080–U+009F
     C1Control,
@@ -169,6 +169,24 @@ mod tests {
     }
 
     // ── 許可文字は検出しない ──────────────────────────────────────────────────
+
+    #[test]
+    fn detects_vt_as_c0_control() {
+        // U+000B = Vertical Tab — excluded from Tab/LF/CR allowlist, must be detected
+        let findings = detect_invisible_chars("\u{000B}");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].category, InvisibleCharCategory::C0Control);
+        assert_eq!(findings[0].char_value, '\u{000B}');
+    }
+
+    #[test]
+    fn detects_ff_as_c0_control() {
+        // U+000C = Form Feed — excluded from Tab/LF/CR allowlist, must be detected
+        let findings = detect_invisible_chars("\u{000C}");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].category, InvisibleCharCategory::C0Control);
+        assert_eq!(findings[0].char_value, '\u{000C}');
+    }
 
     #[test]
     fn tab_not_detected() {

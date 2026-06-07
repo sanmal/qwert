@@ -29,6 +29,28 @@ pub async fn open_vault_dialog(
     let canonical = path.canonicalize().map_err(|e| e.to_string())?;
     *state.vault_root.lock().unwrap() = Some(canonical.clone());
 
+    // T2: asset プロトコルスコープを vault 配下のみに限定する。
+    // 旧 vault と新 vault が異なる場合のみ旧パスを禁止し、新パスを許可する。
+    {
+        use tauri::Manager as _;
+        let scope = app.asset_protocol_scope();
+        let mut allowed = state.allowed_vault.lock().unwrap();
+        if let Some(ref old) = *allowed {
+            if old != &canonical {
+                // 旧 vault を禁止（forbidden は allowed より優先）。
+                if let Err(e) = scope.forbid_directory(old, true) {
+                    eprintln!("asset scope forbid warning (non-fatal): {e}");
+                }
+            }
+        }
+        if allowed.as_deref() != Some(canonical.as_path()) {
+            scope
+                .allow_directory(&canonical, true)
+                .map_err(|e| e.to_string())?;
+        }
+        *allowed = Some(canonical.clone());
+    }
+
     // t09 申し送り: 前回クラッシュした Revision の WAL があれば自動ロールバック（非致命的）
     if let Err(e) = qwert_core::revision::rollback_pending(&canonical) {
         eprintln!("rollback_pending warning (non-fatal): {e}");

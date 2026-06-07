@@ -93,27 +93,49 @@ pub fn execute_write(
     }
 }
 
-pub fn execute_list(format: OutputFormat, vault_root: &Path) -> i32 {
+pub fn execute_list(tree: bool, format: OutputFormat, vault_root: &Path) -> i32 {
     match vault::scan_vault(vault_root) {
         Ok(entries) => {
-            let mut paths = Vec::new();
-            collect_paths(&entries, &mut paths);
-            match format {
-                OutputFormat::Path => {
-                    for p in &paths {
-                        println!("{p}");
+            // --format path is always flat regardless of --tree (xargs-friendly)
+            if format == OutputFormat::Path {
+                let mut paths = Vec::new();
+                collect_paths(&entries, &mut paths);
+                for p in &paths {
+                    println!("{p}");
+                }
+                return ExitCode::Success.as_i32();
+            }
+
+            if tree {
+                match format {
+                    OutputFormat::Json => {
+                        let nodes: Vec<serde_json::Value> =
+                            entries.iter().map(entry_to_json).collect();
+                        let v =
+                            make_envelope("file_tree", serde_json::json!({ "tree": nodes }));
+                        println!("{}", to_json_string(&v));
+                    }
+                    _ => {
+                        for line in tree_to_lines(&entries, 0) {
+                            println!("{line}");
+                        }
                     }
                 }
-                OutputFormat::Json => {
-                    let v = make_envelope(
-                        "file_list",
-                        serde_json::json!({ "paths": paths, "count": paths.len() }),
-                    );
-                    println!("{}", to_json_string(&v));
-                }
-                OutputFormat::Text | OutputFormat::Raw | OutputFormat::Diff => {
-                    for p in &paths {
-                        println!("{p}");
+            } else {
+                let mut paths = Vec::new();
+                collect_paths(&entries, &mut paths);
+                match format {
+                    OutputFormat::Json => {
+                        let v = make_envelope(
+                            "file_list",
+                            serde_json::json!({ "paths": paths, "count": paths.len() }),
+                        );
+                        println!("{}", to_json_string(&v));
+                    }
+                    _ => {
+                        for p in &paths {
+                            println!("{p}");
+                        }
                     }
                 }
             }
@@ -132,5 +154,121 @@ fn collect_paths(entries: &[vault::VaultEntry], out: &mut Vec<String>) {
         } else {
             out.push(e.path.clone());
         }
+    }
+}
+
+fn entry_to_json(e: &vault::VaultEntry) -> serde_json::Value {
+    let ty = if e.is_dir { "dir" } else { "file" };
+    if e.is_dir {
+        let children: Vec<serde_json::Value> =
+            e.children.as_deref().unwrap_or(&[]).iter().map(entry_to_json).collect();
+        serde_json::json!({ "name": e.name, "path": e.path, "type": ty, "children": children })
+    } else {
+        serde_json::json!({ "name": e.name, "path": e.path, "type": ty })
+    }
+}
+
+fn tree_to_lines(entries: &[vault::VaultEntry], depth: usize) -> Vec<String> {
+    let indent = "  ".repeat(depth);
+    let mut lines = Vec::new();
+    for e in entries {
+        if e.is_dir {
+            lines.push(format!("{}{}/", indent, e.name));
+            if let Some(ch) = &e.children {
+                lines.extend(tree_to_lines(ch, depth + 1));
+            }
+        } else {
+            lines.push(format!("{}{}", indent, e.name));
+        }
+    }
+    lines
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qwert_core::vault::VaultEntry;
+
+    fn file(name: &str, path: &str) -> VaultEntry {
+        VaultEntry { name: name.to_owned(), path: path.to_owned(), is_dir: false, children: None }
+    }
+
+    fn dir(name: &str, path: &str, ch: Vec<VaultEntry>) -> VaultEntry {
+        VaultEntry {
+            name: name.to_owned(),
+            path: path.to_owned(),
+            is_dir: true,
+            children: Some(ch),
+        }
+    }
+
+    #[test]
+    fn entry_to_json_file_has_no_children_key() {
+        let v = entry_to_json(&file("auth.md", "auth.md"));
+        assert_eq!(v["type"], "file");
+        assert_eq!(v["name"], "auth.md");
+        assert_eq!(v["path"], "auth.md");
+        assert!(v.get("children").is_none(), "file nodes must omit children");
+    }
+
+    #[test]
+    fn entry_to_json_dir_has_children_array() {
+        let v = entry_to_json(&dir("notes", "notes", vec![file("a.md", "notes/a.md")]));
+        assert_eq!(v["type"], "dir");
+        let children = v["children"].as_array().expect("dir must have children array");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0]["name"], "a.md");
+        assert_eq!(children[0]["type"], "file");
+    }
+
+    #[test]
+    fn entry_to_json_empty_dir_has_empty_children() {
+        let v = entry_to_json(&dir("empty", "empty", vec![]));
+        assert_eq!(v["type"], "dir");
+        assert_eq!(v["children"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn tree_to_lines_flat_file() {
+        let lines = tree_to_lines(&[file("readme.md", "readme.md")], 0);
+        assert_eq!(lines, vec!["readme.md"]);
+    }
+
+    #[test]
+    fn tree_to_lines_dir_with_child() {
+        let entries = vec![dir("notes", "notes", vec![file("auth.md", "notes/auth.md")])];
+        let lines = tree_to_lines(&entries, 0);
+        assert_eq!(lines, vec!["notes/", "  auth.md"]);
+    }
+
+    #[test]
+    fn tree_to_lines_nested_two_levels() {
+        let entries = vec![
+            file("readme.md", "readme.md"),
+            dir(
+                "notes",
+                "notes",
+                vec![
+                    file("auth.md", "notes/auth.md"),
+                    dir("api", "notes/api", vec![file("ep.md", "notes/api/ep.md")]),
+                ],
+            ),
+        ];
+        let lines = tree_to_lines(&entries, 0);
+        assert_eq!(
+            lines,
+            vec!["readme.md", "notes/", "  auth.md", "  api/", "    ep.md"]
+        );
+    }
+
+    #[test]
+    fn tree_json_kind_is_file_tree() {
+        let nodes: Vec<serde_json::Value> =
+            [file("a.md", "a.md")].iter().map(entry_to_json).collect();
+        let v = make_envelope("file_tree", serde_json::json!({ "tree": nodes }));
+        assert_eq!(v["kind"], "file_tree");
+        assert!(v["tree"].is_array());
     }
 }
