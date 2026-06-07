@@ -1,0 +1,10 @@
+// qwert Syncthing ignore rules
+// Copy this file to your vault root as ".stignore"
+// https://docs.syncthing.net/users/ignoring.html
+//
+// .qwert/appearance.toml is NOT excluded here — it is synced by default
+// so vault themes are shared between devices (§20).
+// If you want per-device themes, add ".qwert/appearance.toml" below.
+
+.qwert/cache/
+.qwert/pending-revision.json

@@ -32,9 +32,15 @@ impl From<&CoreError> for ExitCode {
     fn from(err: &CoreError) -> Self {
         match err {
             CoreError::NotFound(_) => ExitCode::NotFound,
-            CoreError::PathTraversal(_) | CoreError::InvalidPattern(_) => ExitCode::Validation,
+            CoreError::PathTraversal(_)
+            | CoreError::InvalidPattern(_)
+            | CoreError::AppearanceValidation(_)
+            | CoreError::InvalidUtf8 { .. } => ExitCode::Validation,
             CoreError::AppearanceConflict(_) => ExitCode::Conflict,
             CoreError::Toml(_) | CoreError::TomlSer(_) => ExitCode::Validation,
+            CoreError::Json(_) => ExitCode::General,
+            // AlreadyExists (rename target exists) → Conflict
+            CoreError::Io(e) if e.kind() == std::io::ErrorKind::AlreadyExists => ExitCode::Conflict,
             CoreError::Io(_) => ExitCode::General,
         }
     }
@@ -84,5 +90,12 @@ mod tests {
         assert_eq!(ExitCode::NotFound.category_str(), "not_found");
         assert_eq!(ExitCode::Validation.category_str(), "validation");
         assert_eq!(ExitCode::Conflict.category_str(), "conflict");
+    }
+
+    #[test]
+    fn invalid_utf8_maps_to_5() {
+        let e = CoreError::InvalidUtf8 { byte_offset: 42 };
+        assert_eq!(ExitCode::from(&e), ExitCode::Validation);
+        assert_eq!(ExitCode::from(&e).as_i32(), 5);
     }
 }

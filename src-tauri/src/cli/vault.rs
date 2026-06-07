@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use qwert_core::search;
+use qwert_core::{sanitize, search, status, vault};
 
 use super::exit_code::ExitCode;
 use super::format::{make_envelope, to_json_string, OutputFormat};
@@ -44,7 +44,7 @@ pub fn execute_search(
                     );
                     println!("{}", to_json_string(&v));
                 }
-                OutputFormat::Text | OutputFormat::Raw => {
+                OutputFormat::Text | OutputFormat::Raw | OutputFormat::Diff => {
                     for h in &hits {
                         println!("{}:{}: {}", h.path, h.line, h.snippet);
                     }
@@ -57,19 +57,117 @@ pub fn execute_search(
     }
 }
 
-/// Stub: vault status report is implemented in a later task.
-pub fn execute_status(format: OutputFormat, _vault_root: &Path) -> i32 {
+pub fn execute_status(format: OutputFormat, vault_root: &Path) -> i32 {
+    match status::check_vault_status(vault_root) {
+        Ok(s) => {
+            match format {
+                OutputFormat::Json => {
+                    let payload = serde_json::to_value(&s).unwrap_or_default();
+                    let v = make_envelope("vault_status", payload);
+                    println!("{}", to_json_string(&v));
+                }
+                OutputFormat::Text
+                | OutputFormat::Raw
+                | OutputFormat::Diff
+                | OutputFormat::Path => {
+                    if s.healthy {
+                        println!("vault status: ok");
+                    } else {
+                        println!("vault status: warnings");
+                        for w in &s.warnings {
+                            println!("  ! {w}");
+                        }
+                    }
+                }
+            }
+            // vault-level state は exit code に昇格させない（§9）
+            ExitCode::Success.as_i32()
+        }
+        Err(ref e) => super::emit_core_error(e),
+    }
+}
+
+pub fn execute_scan(format: OutputFormat, vault_root: &Path) -> i32 {
+    let tree = match vault::scan_vault(vault_root) {
+        Ok(t) => t,
+        Err(ref e) => return super::emit_core_error(e),
+    };
+
+    let mut all_findings: Vec<(String, Vec<sanitize::InvisibleCharFinding>)> = Vec::new();
+    collect_findings(vault_root, &tree, &mut all_findings);
+
+    let total: usize = all_findings.iter().map(|(_, f)| f.len()).sum();
+
     match format {
+        OutputFormat::Path => {
+            for (path, _) in &all_findings {
+                println!("{path}");
+            }
+        }
         OutputFormat::Json => {
+            let items: Vec<serde_json::Value> = all_findings
+                .iter()
+                .flat_map(|(path, findings)| {
+                    findings.iter().map(move |f| {
+                        serde_json::json!({
+                            "path": path,
+                            "line": f.line,
+                            "column": f.column,
+                            "char_code": f.char_value as u32,
+                            "char_hex": f.char_hex(),
+                            "category": f.category_str(),
+                        })
+                    })
+                })
+                .collect();
             let v = make_envelope(
-                "vault_status",
-                serde_json::json!({ "sync_conflicts": 0, "pending_revisions": 0 }),
+                "vault_scan_result",
+                serde_json::json!({
+                    "findings": items,
+                    "files_with_findings": all_findings.len(),
+                    "total": total,
+                }),
             );
             println!("{}", to_json_string(&v));
         }
-        OutputFormat::Text | OutputFormat::Raw | OutputFormat::Path => {
-            println!("vault status: ok");
+        OutputFormat::Text | OutputFormat::Raw | OutputFormat::Diff => {
+            if all_findings.is_empty() {
+                println!("vault scan: ok");
+            } else {
+                for (path, findings) in &all_findings {
+                    for f in findings {
+                        println!(
+                            "{}:{}:{}: {} ({})",
+                            path,
+                            f.line,
+                            f.column,
+                            f.category_str(),
+                            f.char_hex()
+                        );
+                    }
+                }
+                eprintln!("{total} finding(s) in {} file(s)", all_findings.len());
+            }
         }
     }
     ExitCode::Success.as_i32()
+}
+
+fn collect_findings(
+    vault_root: &Path,
+    entries: &[vault::VaultEntry],
+    out: &mut Vec<(String, Vec<sanitize::InvisibleCharFinding>)>,
+) {
+    for e in entries {
+        if e.is_dir {
+            if let Some(ch) = &e.children {
+                collect_findings(vault_root, ch, out);
+            }
+        } else if let Ok(content) = vault::read_file(vault_root, &e.path) {
+            let findings = sanitize::detect_invisible_chars(&content);
+            if !findings.is_empty() {
+                out.push((e.path.clone(), findings));
+            }
+        }
+    }
 }

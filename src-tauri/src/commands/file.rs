@@ -41,11 +41,7 @@ pub fn read_file(path: String, state: State<'_, AppState>) -> Result<String, Str
 }
 
 #[tauri::command]
-pub fn write_file(
-    path: String,
-    content: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn write_file(path: String, content: String, state: State<'_, AppState>) -> Result<(), String> {
     // B2: 書き込み前に記録し、watcher の自己トリガを抑制する（配線は t09）。
     state
         .recent_writes

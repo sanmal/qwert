@@ -30,3 +30,17 @@
   overflow-x: auto;
   border-radius: 4px;
 }
+
+/* Wikilink spans in the preview */
+.preview-container .wikilink {
+  color: var(--qw-accent);
+  border-bottom: 1px solid var(--qw-accent);
+  cursor: pointer;
+}
+.preview-container .wikilink:hover {
+  opacity: 0.8;
+}
+.preview-container .wikilink-unresolved {
+  color: var(--qw-fg-muted);
+  border-bottom: 1px dashed var(--qw-fg-muted);
+}

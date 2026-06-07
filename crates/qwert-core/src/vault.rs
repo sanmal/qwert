@@ -40,9 +40,9 @@ pub fn resolve_new_path(vault_root: &Path, relative: &str) -> crate::Result<Path
     let parent = joined
         .parent()
         .ok_or_else(|| crate::CoreError::PathTraversal(relative.to_owned()))?;
-    let parent_canonical = parent.canonicalize().map_err(|_| {
-        crate::CoreError::NotFound(parent.to_string_lossy().into_owned())
-    })?;
+    let parent_canonical = parent
+        .canonicalize()
+        .map_err(|_| crate::CoreError::NotFound(parent.to_string_lossy().into_owned()))?;
     if !parent_canonical.starts_with(vault_root) {
         return Err(crate::CoreError::PathTraversal(relative.to_owned()));
     }
@@ -108,9 +108,80 @@ pub fn scan_vault(vault_root: &Path) -> crate::Result<Vec<VaultEntry>> {
 }
 
 /// パストラバーサル検証付きのファイル読み取り（既存パス用）。
+/// 不正 UTF-8 は `CoreError::InvalidUtf8 { byte_offset }` を返す（exit 5 = Validation）。
 pub fn read_file(vault_root: &Path, relative_path: &str) -> crate::Result<String> {
     let resolved = resolve_path(vault_root, relative_path)?;
-    Ok(std::fs::read_to_string(resolved)?)
+    read_utf8(&resolved)
+}
+
+/// バイト列として読み取り、UTF-8 変換を行う内部ヘルパー。
+/// `read_to_string` より詳細なエラー（byte_offset 付き）を返す。
+fn read_utf8(path: &Path) -> crate::Result<String> {
+    let bytes = std::fs::read(path)?;
+    String::from_utf8(bytes).map_err(|e| crate::CoreError::InvalidUtf8 {
+        byte_offset: e.utf8_error().valid_up_to(),
+    })
+}
+
+/// ファイルを読み取り、内容と mtime（Unix 秒）を返す。
+/// 不正 UTF-8 は `CoreError::InvalidUtf8` を返す。
+pub fn read_file_with_mtime(
+    vault_root: &Path,
+    relative_path: &str,
+) -> crate::Result<(String, u64)> {
+    let resolved = resolve_path(vault_root, relative_path)?;
+    let content = read_utf8(&resolved)?;
+    let mtime = mtime_secs(&resolved)?;
+    Ok((content, mtime))
+}
+
+/// ファイルの mtime を Unix 秒で返す。
+pub fn get_file_mtime(vault_root: &Path, relative_path: &str) -> crate::Result<u64> {
+    let resolved = resolve_path(vault_root, relative_path)?;
+    mtime_secs(&resolved)
+}
+
+/// `write_file_safe` の結果。Conflict は書き込みを行わず呼び出し側に判断を委ねる。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteResult {
+    Success {
+        /// 書き込み後の mtime（Unix 秒）。
+        new_mtime: u64,
+    },
+    Conflict {
+        /// 現在のファイルの mtime（Unix 秒）。次回 --if-match に使う。
+        current_mtime: u64,
+    },
+}
+
+/// mtime 楽観ロック付き書き込み（§12 Level 2）。
+///
+/// `expected_mtime` が現在の mtime（Unix 秒）と一致する場合のみアトミック書込を行う。
+/// 不一致は書き込まずに `WriteResult::Conflict` を返す（エラーではない）。
+pub fn write_file_safe(
+    vault_root: &Path,
+    relative_path: &str,
+    content: &str,
+    expected_mtime: u64,
+) -> crate::Result<WriteResult> {
+    let resolved = resolve_path(vault_root, relative_path)?;
+    let current = mtime_secs(&resolved)?;
+    if current != expected_mtime {
+        return Ok(WriteResult::Conflict {
+            current_mtime: current,
+        });
+    }
+    write_atomic(&resolved, content)?;
+    let new_mtime = mtime_secs(&resolved)?;
+    Ok(WriteResult::Success { new_mtime })
+}
+
+fn mtime_secs(path: &Path) -> crate::Result<u64> {
+    let meta = std::fs::metadata(path)?;
+    let t = meta.modified().map_err(crate::CoreError::Io)?;
+    Ok(t.duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs())
 }
 
 fn write_atomic(path: &Path, content: &str) -> crate::Result<()> {
@@ -119,7 +190,8 @@ fn write_atomic(path: &Path, content: &str) -> crate::Result<()> {
         .ok_or_else(|| crate::CoreError::PathTraversal(path.to_string_lossy().into_owned()))?;
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     tmp.write_all(content.as_bytes())?;
-    tmp.persist(path).map_err(|e| crate::CoreError::Io(e.error))?;
+    tmp.persist(path)
+        .map_err(|e| crate::CoreError::Io(e.error))?;
     Ok(())
 }
 
@@ -167,13 +239,12 @@ where
 {
     let (tx, rx) = std::sync::mpsc::channel::<notify::Event>();
 
-    let mut watcher =
-        notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if let Ok(event) = res {
-                let _ = tx.send(event);
-            }
-        })
-        .map_err(|e| crate::CoreError::Io(std::io::Error::other(e)))?;
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(event) = res {
+            let _ = tx.send(event);
+        }
+    })
+    .map_err(|e| crate::CoreError::Io(std::io::Error::other(e)))?;
 
     watcher
         .watch(vault_root, RecursiveMode::Recursive)
@@ -341,5 +412,148 @@ mod tests {
 
         create_file(&vault_root, "new.md").unwrap();
         assert!(vault_root.join("new.md").exists());
+    }
+
+    // ── mtime / write_file_safe ───────────────────────────────────────────────
+
+    #[test]
+    fn read_file_with_mtime_returns_content_and_nonzero_mtime() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        fs::write(root.join("note.md"), "hello").unwrap();
+
+        let (content, mtime) = read_file_with_mtime(&root, "note.md").unwrap();
+        assert_eq!(content, "hello");
+        assert!(mtime > 0, "mtime should be non-zero");
+    }
+
+    #[test]
+    fn get_file_mtime_matches_read_file_mtime() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        fs::write(root.join("note.md"), "content").unwrap();
+
+        let (_, mtime_from_read) = read_file_with_mtime(&root, "note.md").unwrap();
+        let mtime_direct = get_file_mtime(&root, "note.md").unwrap();
+        assert_eq!(mtime_from_read, mtime_direct);
+    }
+
+    #[test]
+    fn write_file_safe_succeeds_when_mtime_matches() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        fs::write(root.join("note.md"), "original").unwrap();
+
+        let mtime = get_file_mtime(&root, "note.md").unwrap();
+        let result = write_file_safe(&root, "note.md", "updated", mtime).unwrap();
+
+        assert!(
+            matches!(result, WriteResult::Success { .. }),
+            "expected Success, got {result:?}"
+        );
+        let got = fs::read_to_string(root.join("note.md")).unwrap();
+        assert_eq!(got, "updated");
+    }
+
+    #[test]
+    fn write_file_safe_conflicts_when_mtime_differs() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        fs::write(root.join("note.md"), "original").unwrap();
+
+        let real_mtime = get_file_mtime(&root, "note.md").unwrap();
+        let stale_mtime = real_mtime.saturating_sub(10); // old mtime
+
+        let result = write_file_safe(&root, "note.md", "should not write", stale_mtime).unwrap();
+
+        assert!(
+            matches!(result, WriteResult::Conflict { current_mtime } if current_mtime == real_mtime),
+            "expected Conflict with current mtime, got {result:?}"
+        );
+        // file must be unchanged
+        assert_eq!(
+            fs::read_to_string(root.join("note.md")).unwrap(),
+            "original"
+        );
+    }
+
+    #[test]
+    fn write_file_safe_conflict_returns_current_mtime() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        fs::write(root.join("note.md"), "v1").unwrap();
+
+        let mtime_v1 = get_file_mtime(&root, "note.md").unwrap();
+
+        // Simulate an interleaved write: overwrite file, advancing mtime
+        fs::write(root.join("note.md"), "v2 by external").unwrap();
+        let mtime_v2 = get_file_mtime(&root, "note.md").unwrap();
+
+        // Try to write with the old mtime
+        if mtime_v1 != mtime_v2 {
+            // mtime advanced (sub-second precision may make them equal on some FSes)
+            let result = write_file_safe(&root, "note.md", "v3 attempt", mtime_v1).unwrap();
+            assert!(
+                matches!(result, WriteResult::Conflict { current_mtime } if current_mtime == mtime_v2)
+            );
+        }
+        // If mtime_v1 == mtime_v2 (same-second write, low-res FS), the test is vacuously true
+    }
+
+    #[test]
+    fn write_file_safe_not_found_returns_error() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        // File doesn't exist → resolve_path returns NotFound
+        let result = write_file_safe(&root, "nonexistent.md", "content", 12345);
+        assert!(
+            matches!(result, Err(crate::CoreError::NotFound(_))),
+            "expected NotFound error: {result:?}"
+        );
+    }
+
+    // ── 第3層: 不正 UTF-8 ────────────────────────────────────────────────────
+
+    #[test]
+    fn read_file_invalid_utf8_returns_invalid_utf8_error() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        // Write raw invalid UTF-8 bytes directly
+        std::fs::write(root.join("bad.md"), b"\xFF\xFE invalid utf8 data").unwrap();
+
+        let result = read_file(&root, "bad.md");
+        assert!(
+            matches!(result, Err(crate::CoreError::InvalidUtf8 { .. })),
+            "expected InvalidUtf8, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn read_file_invalid_utf8_has_byte_offset() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        // "valid\xFF" — first 5 bytes are valid ASCII, offset 5 is the invalid byte
+        let mut bytes = b"valid".to_vec();
+        bytes.push(0xFF);
+        std::fs::write(root.join("bad.md"), &bytes).unwrap();
+
+        let result = read_file(&root, "bad.md");
+        assert!(
+            matches!(
+                result,
+                Err(crate::CoreError::InvalidUtf8 { byte_offset: 5 })
+            ),
+            "expected InvalidUtf8 at byte 5, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn read_file_valid_utf8_succeeds() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        std::fs::write(root.join("good.md"), "こんにちは🎉").unwrap();
+        let result = read_file(&root, "good.md");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "こんにちは🎉");
     }
 }

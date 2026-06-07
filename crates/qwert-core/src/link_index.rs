@@ -14,10 +14,7 @@ use unicode_normalization::UnicodeNormalization;
 static WIKILINK_RE: OnceLock<Regex> = OnceLock::new();
 fn wikilink_re() -> &'static Regex {
     WIKILINK_RE.get_or_init(|| {
-        Regex::new(
-            r"(!?)\[\[([^\[\]|#\n]+?)(?:#([^\[\]|#\n]+?))?(?:\|([^\[\]\n]+?))?\]\]",
-        )
-        .unwrap()
+        Regex::new(r"(!?)\[\[([^\[\]|#\n]+?)(?:#([^\[\]|#\n]+?))?(?:\|([^\[\]\n]+?))?\]\]").unwrap()
     })
 }
 
@@ -78,7 +75,14 @@ pub fn extract_wikilinks(content: &str) -> Vec<WikilinkRef> {
         let last_newline = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
         let column = start - last_newline + 1;
 
-        result.push(WikilinkRef { target, heading, display, embed, line, column });
+        result.push(WikilinkRef {
+            target,
+            heading,
+            display,
+            embed,
+            line,
+            column,
+        });
     }
 
     result
@@ -86,15 +90,12 @@ pub fn extract_wikilinks(content: &str) -> Vec<WikilinkRef> {
 
 /// Return all vault files that contain at least one wikilink whose target
 /// resolves to `target_stem` (case-insensitive, NFC-normalized).
-pub fn build_backlinks(
-    vault_root: &Path,
-    target_stem: &str,
-) -> crate::Result<Vec<BacklinkSource>> {
+pub fn build_backlinks(vault_root: &Path, target_stem: &str) -> crate::Result<Vec<BacklinkSource>> {
     let want = normalize_name(target_stem);
     let mut sources = Vec::new();
 
     for entry in WalkBuilder::new(vault_root).build().flatten() {
-        if !entry.file_type().map_or(false, |t| t.is_file()) {
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
         let path = entry.path();
@@ -136,11 +137,86 @@ pub fn normalize_name(name: &str) -> UniCase<String> {
     UniCase::new(nfc)
 }
 
+/// Resolve a wikilink target to a vault-relative file path.
+/// Returns the first `.md` file whose stem matches `target`
+/// (NFC-normalized, case-insensitive).
+pub fn resolve_link_to_path(vault_root: &Path, target: &str) -> Option<String> {
+    let want = normalize_name(target);
+    for entry in WalkBuilder::new(vault_root).build().flatten() {
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext != "md" && ext != "markdown" {
+            continue;
+        }
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            && normalize_name(stem) == want
+        {
+            return path
+                .strip_prefix(vault_root)
+                .ok()
+                .map(|r| r.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    None
+}
+
+/// Replace all wikilinks targeting `old_stem` with `new_stem` in `content`,
+/// respecting the same exclusion rules as `extract_wikilinks`.
+/// Heading anchors and display text are preserved verbatim.
+pub fn replace_wikilinks(content: &str, old_stem: &str, new_stem: &str) -> String {
+    let excluded = excluded_ranges(content);
+    let want = normalize_name(old_stem);
+    let re = wikilink_re();
+
+    let mut replacements: Vec<(Range<usize>, String)> = Vec::new();
+
+    for cap in re.captures_iter(content) {
+        let m = cap.get(0).unwrap();
+        let start = m.start();
+
+        if excluded.iter().any(|r| r.contains(&start)) {
+            continue;
+        }
+
+        let target = cap.get(2).map_or("", |m| m.as_str()).trim();
+        if normalize_name(target) != want {
+            continue;
+        }
+
+        let embed = cap.get(1).map_or("", |m| m.as_str());
+        let heading = cap
+            .get(3)
+            .map(|m| format!("#{}", m.as_str()))
+            .unwrap_or_default();
+        let display = cap
+            .get(4)
+            .map(|m| format!("|{}", m.as_str()))
+            .unwrap_or_default();
+        let new_link = format!("{embed}[[{new_stem}{heading}{display}]]");
+
+        replacements.push((m.range(), new_link));
+    }
+
+    if replacements.is_empty() {
+        return content.to_owned();
+    }
+
+    // Apply in reverse order to preserve earlier byte offsets.
+    let mut result = content.to_owned();
+    for (range, replacement) in replacements.into_iter().rev() {
+        result.replace_range(range, &replacement);
+    }
+    result
+}
+
 // ── Internals ────────────────────────────────────────────────────────────────
 
 /// Compute byte ranges in `content` that should be excluded from wikilink
 /// extraction: frontmatter, code blocks, HTML comments.
-fn excluded_ranges(content: &str) -> Vec<Range<usize>> {
+pub(crate) fn excluded_ranges(content: &str) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
 
     // 1. YAML frontmatter
@@ -215,8 +291,14 @@ mod tests {
     fn codefence_content_not_extracted() {
         let md = "before\n```\n[[X]] in fence\n```\nafter [[Y]]\n";
         let links = extract_wikilinks(md);
-        assert!(links.iter().all(|l| l.target != "X"), "X must be excluded: {links:?}");
-        assert!(links.iter().any(|l| l.target == "Y"), "Y must be present: {links:?}");
+        assert!(
+            links.iter().all(|l| l.target != "X"),
+            "X must be excluded: {links:?}"
+        );
+        assert!(
+            links.iter().any(|l| l.target == "Y"),
+            "Y must be present: {links:?}"
+        );
     }
 
     #[test]
@@ -224,32 +306,56 @@ mod tests {
         // 4-space indented code block
         let md = "text\n\n    [[X]] indented\n\n[[Y]] normal\n";
         let links = extract_wikilinks(md);
-        assert!(links.iter().all(|l| l.target != "X"), "X must be excluded: {links:?}");
-        assert!(links.iter().any(|l| l.target == "Y"), "Y must be present: {links:?}");
+        assert!(
+            links.iter().all(|l| l.target != "X"),
+            "X must be excluded: {links:?}"
+        );
+        assert!(
+            links.iter().any(|l| l.target == "Y"),
+            "Y must be present: {links:?}"
+        );
     }
 
     #[test]
     fn html_comment_not_extracted() {
         let md = "before <!-- [[X]] --> after [[Y]]\n";
         let links = extract_wikilinks(md);
-        assert!(links.iter().all(|l| l.target != "X"), "X must be excluded: {links:?}");
-        assert!(links.iter().any(|l| l.target == "Y"), "Y must be present: {links:?}");
+        assert!(
+            links.iter().all(|l| l.target != "X"),
+            "X must be excluded: {links:?}"
+        );
+        assert!(
+            links.iter().any(|l| l.target == "Y"),
+            "Y must be present: {links:?}"
+        );
     }
 
     #[test]
     fn multiline_html_comment_not_extracted() {
         let md = "<!--\n[[X]] in multiline comment\n-->\n[[Y]] outside\n";
         let links = extract_wikilinks(md);
-        assert!(links.iter().all(|l| l.target != "X"), "X must be excluded: {links:?}");
-        assert!(links.iter().any(|l| l.target == "Y"), "Y must be present: {links:?}");
+        assert!(
+            links.iter().all(|l| l.target != "X"),
+            "X must be excluded: {links:?}"
+        );
+        assert!(
+            links.iter().any(|l| l.target == "Y"),
+            "Y must be present: {links:?}"
+        );
     }
 
     #[test]
     fn frontmatter_not_extracted() {
         let md = "---\ntarget: [[X]]\n---\n\n[[Y]] in body\n";
         let links = extract_wikilinks(md);
-        assert!(links.iter().all(|l| l.target != "X"), "X must be excluded: {links:?}");
-        assert!(links.iter().any(|l| l.target == "Y"), "Y must be present: {links:?}");
+        assert!(
+            links.iter().all(|l| l.target != "X"),
+            "X must be excluded: {links:?}"
+        );
+        assert!(
+            links.iter().any(|l| l.target == "Y"),
+            "Y must be present: {links:?}"
+        );
     }
 
     #[test]
@@ -337,8 +443,8 @@ mod tests {
     #[test]
     fn nfc_nfd_match() {
         // "é" can be NFC (U+00E9) or NFD (e + U+0301)
-        let nfc = "\u{00e9}";     // é precomposed
-        let nfd = "e\u{0301}";    // e + combining accent
+        let nfc = "\u{00e9}"; // é precomposed
+        let nfd = "e\u{0301}"; // e + combining accent
         assert_eq!(normalize_name(nfc), normalize_name(nfd));
     }
 

@@ -8,6 +8,9 @@ import { Preview } from "./components/Preview";
 import { StatusBar } from "./components/StatusBar";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ExternalChangeDialog } from "./components/ExternalChangeDialog";
+import { BacklinksPanel } from "./components/BacklinksPanel";
+import { CommandPalette } from "./components/CommandPalette";
+import { VaultStatusBanner } from "./components/VaultStatusBanner";
 import { vaultStore } from "./stores/vault";
 import { editorStore } from "./stores/editor";
 import { appearanceStore } from "./stores/appearance";
@@ -18,6 +21,7 @@ export default function App() {
   const [viewMode, setViewMode] = createSignal<ViewMode>(VIEW_MODE.SPLIT);
   const [showSettings, setShowSettings] = createSignal(false);
   const [showSidebar, setShowSidebar] = createSignal(true);
+  const [showPalette, setShowPalette] = createSignal(false);
   const [showExternalChangeDialog, setShowExternalChangeDialog] = createSignal(false);
   const [externalChangeFile, setExternalChangeFile] = createSignal<string>("");
 
@@ -61,6 +65,10 @@ export default function App() {
           e.preventDefault();
           setShowSidebar(v => !v);
           break;
+        case "p":
+          e.preventDefault();
+          setShowPalette(v => !v);
+          break;
         case "e":
           e.preventDefault();
           setViewMode(current => {
@@ -83,10 +91,12 @@ export default function App() {
 
   return (
     <div class="app-layout">
+      <VaultStatusBanner />
       <Show when={showSidebar()}>
         <div class="sidebar">
           <button onClick={vaultStore.openVault}>Vault を開く</button>
           <FileTree />
+          <BacklinksPanel />
         </div>
       </Show>
       <div class="main-content">
@@ -96,6 +106,9 @@ export default function App() {
       <StatusBar />
 
       <Show when={showSettings()}><SettingsPanel /></Show>
+      <Show when={showPalette()}>
+        <CommandPalette onClose={() => setShowPalette(false)} />
+      </Show>
 
       <Show when={showExternalChangeDialog()}>
         <ExternalChangeDialog

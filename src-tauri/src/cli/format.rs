@@ -6,6 +6,8 @@ pub enum OutputFormat {
     Path,
     Text,
     Raw,
+    /// Unified diff output (only meaningful for `note revision --dry-run`)
+    Diff,
 }
 
 /// Merge `schema_version` + `kind` with payload fields at the top level.

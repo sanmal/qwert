@@ -4,14 +4,24 @@ import { EditorState, type Extension } from "@codemirror/state";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { basicSetup } from "codemirror";
+import { autocompletion } from "@codemirror/autocomplete";
 import { qwertTheme } from "../lib/codemirror/theme";
 import {
   highlightCompartment,
   highlightOn,
   highlightOff,
 } from "../lib/codemirror/highlight";
+import {
+  wikilinkDecorations,
+  wikilinkClickHandler,
+  wikilinkCompletionSource,
+  wikilinkTheme,
+} from "../lib/codemirror/wikilink";
 import { editorStore } from "../stores/editor";
 import { settingsStore } from "../stores/settings";
+import { vaultStore } from "../stores/vault";
+import * as tauri from "../lib/tauri";
+import type { RelativePath } from "../types/brand";
 
 export function Editor() {
   let containerRef!: HTMLDivElement;
@@ -29,10 +39,18 @@ export function Editor() {
       const { vim } = await import("@replit/codemirror-vim");
       extensions.push(vim());
     }
+    const completionSrc = wikilinkCompletionSource(() => vaultStore.flatFiles());
     extensions.push(
       basicSetup,
       markdown({ base: markdownLanguage, codeLanguages: languages }),
       qwertTheme,
+      wikilinkDecorations,
+      wikilinkTheme,
+      wikilinkClickHandler(async (target) => {
+        const path = await tauri.resolveWikilink(target);
+        if (path) vaultStore.setSelectedFile(path as RelativePath);
+      }),
+      autocompletion({ override: [completionSrc] }),
       settingsStore.syntaxHighlight() ? highlightOn : highlightOff,
       EditorView.updateListener.of(update => {
         if (update.docChanged && !applyingRemote) {

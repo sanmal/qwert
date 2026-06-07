@@ -1,5 +1,5 @@
 use ignore::WalkBuilder;
-use regex::{escape, Regex};
+use regex::{Regex, escape};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -26,7 +26,7 @@ pub fn search_vault(
     let mut hits = Vec::new();
 
     for entry in WalkBuilder::new(vault_root).build().flatten() {
-        if !entry.file_type().map_or(false, |t| t.is_file()) {
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
         let path = entry.path();
@@ -150,7 +150,11 @@ mod tests {
         let vault = make_vault();
         let root = vault.path();
         // Two lines starting with TODO, one that does not
-        fs::write(root.join("note.md"), "TODO: fix\nTODO: also fix\nfix TODO\n").unwrap();
+        fs::write(
+            root.join("note.md"),
+            "TODO: fix\nTODO: also fix\nfix TODO\n",
+        )
+        .unwrap();
 
         let hits = search_vault(root, r"^TODO", true).unwrap();
         assert_eq!(hits.len(), 2);

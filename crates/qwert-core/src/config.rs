@@ -6,6 +6,8 @@ pub struct Config {
     pub general: GeneralConfig,
     pub editor: EditorConfig,
     pub preview: PreviewConfig,
+    pub revision: RevisionConfig,
+    pub sanitize: SanitizeConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +34,39 @@ pub struct PreviewConfig {
     pub sync_scroll: bool,
     pub render_mermaid: bool,
     pub render_math: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RevisionConfig {
+    pub naming: String,
+    pub confirm_before_execute: bool,
+    pub excluded_dirs: Vec<String>,
+}
+
+impl Default for RevisionConfig {
+    fn default() -> Self {
+        Self {
+            naming: "increment".to_owned(),
+            confirm_before_execute: true,
+            excluded_dirs: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SanitizeConfig {
+    /// 第1層 不可視文字検出の有効/無効（デフォルト ON）。
+    pub warn_invisible_chars: bool,
+}
+
+impl Default for SanitizeConfig {
+    fn default() -> Self {
+        Self {
+            warn_invisible_chars: true,
+        }
+    }
 }
 
 // 非ゼロ・非 false 既定値があるため #[derive(Default)] ではなく手動実装（A5）。
@@ -67,7 +102,6 @@ impl Default for PreviewConfig {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +132,17 @@ mod tests {
         assert_eq!(c.preview.default_view, "split");
         assert!(c.editor.show_line_numbers);
         assert!(c.preview.render_mermaid);
+    }
+
+    #[test]
+    fn sanitize_warn_invisible_chars_defaults_true() {
+        let c = Config::default();
+        assert!(c.sanitize.warn_invisible_chars);
+    }
+
+    #[test]
+    fn sanitize_section_parsed_from_toml() {
+        let c: Config = toml::from_str("[sanitize]\nwarn_invisible_chars = false").unwrap();
+        assert!(!c.sanitize.warn_invisible_chars);
     }
 }

@@ -41,3 +41,102 @@ export async function renderMarkdown(content: string): Promise<string> {
 export async function loadAppearance(): Promise<Record<string, string>> {
   return invoke<Record<string, string>>("load_appearance");
 }
+
+// ── Vault status ───────────────────────────────────────────────────────────────
+
+export interface SyncConflict {
+  base: string;
+  conflict_file: string;
+}
+
+export interface PendingRevisionInfo {
+  source_old_path: string;
+  source_new_path: string;
+}
+
+export interface VaultStatus {
+  vault: string;
+  sync_conflicts: SyncConflict[];
+  pending_revision: PendingRevisionInfo | null;
+  healthy: boolean;
+  warnings: string[];
+}
+
+export async function getVaultStatus(): Promise<VaultStatus> {
+  return invoke<VaultStatus>("get_vault_status");
+}
+
+// ── Invisible char scan ────────────────────────────────────────────────────────
+
+export interface ScanFinding {
+  line: number;
+  column: number;
+  char_code: number;
+  char_hex: string;
+  category: string;
+}
+
+export interface FileScanResult {
+  path: string;
+  findings: ScanFinding[];
+}
+
+export async function scanNote(path: string): Promise<ScanFinding[]> {
+  return invoke<ScanFinding[]>("scan_note", { path });
+}
+
+export async function scanVaultFiles(): Promise<FileScanResult[]> {
+  return invoke<FileScanResult[]>("scan_vault_files");
+}
+
+export interface BacklinkEntry {
+  path: string;
+  wikilink_count: number;
+}
+
+export async function getBacklinks(path: string): Promise<BacklinkEntry[]> {
+  return invoke<BacklinkEntry[]>("get_backlinks", { path });
+}
+
+export async function resolveWikilink(target: string): Promise<string | null> {
+  return invoke<string | null>("resolve_wikilink", { target });
+}
+
+// ── Revision ──────────────────────────────────────────────────────────────────
+
+export interface RevisionAffectedFile {
+  path: string;
+  wikilink_count: number;
+}
+
+export interface RevisionPlan {
+  old_name: string;
+  new_name: string;
+  old_path: string;
+  new_path: string;
+  affected_files: RevisionAffectedFile[];
+  total_wikilinks: number;
+  diff: string;
+}
+
+export interface RevisionResult {
+  old_path: string;
+  new_path: string;
+  total_wikilinks: number;
+}
+
+export async function planRevisionNote(
+  path: string,
+  naming: string,
+  name?: string,
+): Promise<RevisionPlan> {
+  return invoke<RevisionPlan>("plan_revision_note", { path, naming, name });
+}
+
+export async function executeRevisionNote(
+  path: string,
+  naming: string,
+  name?: string,
+): Promise<RevisionResult> {
+  return invoke<RevisionResult>("execute_revision_note", { path, naming, name });
+}

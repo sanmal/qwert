@@ -1,5 +1,5 @@
-mod commands;
 pub mod cli;
+mod commands;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -30,8 +30,15 @@ pub fn run() {
             commands::file::create_file,
             commands::vault::get_vault_root,
             commands::vault::open_vault_dialog,
+            commands::vault::get_vault_status,
             commands::markdown::render_markdown,
             commands::appearance::load_appearance,
+            commands::link::get_backlinks,
+            commands::link::resolve_wikilink,
+            commands::revision::plan_revision_note,
+            commands::revision::execute_revision_note,
+            commands::sanitize::scan_note,
+            commands::sanitize::scan_vault_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

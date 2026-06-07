@@ -1,4 +1,5 @@
 use crate::AppState;
+use qwert_core::status;
 use std::time::Duration;
 use tauri::Emitter;
 use tauri::State;
@@ -28,6 +29,11 @@ pub async fn open_vault_dialog(
     let canonical = path.canonicalize().map_err(|e| e.to_string())?;
     *state.vault_root.lock().unwrap() = Some(canonical.clone());
 
+    // t09 申し送り: 前回クラッシュした Revision の WAL があれば自動ロールバック（非致命的）
+    if let Err(e) = qwert_core::revision::rollback_pending(&canonical) {
+        eprintln!("rollback_pending warning (non-fatal): {e}");
+    }
+
     {
         let app_for_cb = app.clone();
         let recent = state.recent_writes.clone(); // Arc<Mutex<HashMap<String, Instant>>>
@@ -52,4 +58,12 @@ pub async fn open_vault_dialog(
     }
 
     Ok(Some(canonical.to_string_lossy().into_owned()))
+}
+
+/// Return the current vault health status (sync-conflicts, pending WAL, etc.).
+#[tauri::command]
+pub fn get_vault_status(state: State<'_, AppState>) -> Result<status::VaultStatus, String> {
+    let root_lock = state.vault_root.lock().unwrap();
+    let root = root_lock.as_ref().ok_or("No vault open")?;
+    status::check_vault_status(root).map_err(|e| e.to_string())
 }

@@ -17,6 +17,12 @@ pub enum CoreError {
     AppearanceConflict(String),
     #[error("Invalid pattern: {0}")]
     InvalidPattern(String),
+    #[error("Appearance validation error: {0}")]
+    AppearanceValidation(String),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("Invalid UTF-8 at byte offset {byte_offset}")]
+    InvalidUtf8 { byte_offset: usize },
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;
@@ -46,11 +52,7 @@ pub struct ActionableError {
 }
 
 impl ActionableError {
-    pub fn new(
-        category: impl Into<String>,
-        exit_code: u8,
-        message: impl Into<String>,
-    ) -> Self {
+    pub fn new(category: impl Into<String>, exit_code: u8, message: impl Into<String>) -> Self {
         Self {
             schema_version: "v1".to_owned(),
             kind: "error".to_owned(),
