@@ -1,4 +1,5 @@
 mod commands;
+pub mod cli;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,7 +17,6 @@ pub struct AppState {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             vault_root: Mutex::new(None),
