@@ -1,7 +1,6 @@
-#qwert
 Rust製軽量Markdownノートアプリケーション。
 
-最終更新: 2026-05-28(v10)
+最終更新: 2026-06-10(v11)
 
 ---
 
@@ -626,7 +625,7 @@ qwertが行うのは「このファイルにあるはずのない文字が存在
 
 | 層 | 内容 | 判断 | Phase |
 |---|------|-----|------|
-| 第1層 | Unicode Tag（U+E0000〜E007F）、Null byte（U+0000）、C0制御文字のうちTab/LF/CR以外（U+0001〜0008, U+000B〜000C, U+000E〜001F）、C1制御文字（U+0080〜009F） | 正当な理由ゼロ、無条件で検出・警告 | **Phase 2 で実装** |
+| 第1層 | Unicode Tag（U+E0000〜E007F）、Null byte（U+0000）、C0制御文字のうちTab/LF/CR以外（U+0001〜0008, 000B, 000C, 000E〜001F）、C1制御文字（U+0080〜009F） | 正当な理由ゼロ、無条件で検出・警告 | **Phase 2 で実装** |
 | 第2層 | ZWJ（U+200D）、BiDi制御文字（U+202A〜202E, U+2066〜2069）、BOM（U+FEFF、文中のみ）、Variation Selector（U+FE00〜FE0F） | 文脈依存、絵文字シーケンス・多言語テキストでは正当 | Phase 5 発展機能で段階的に対応 |
 | 第3層 | 不正なUTF-8シーケンス（オーバーロングエンコーディング等） | `read_to_string` のエラーハンドリング拡充として自然対応 | Phase 2 |
 
@@ -658,7 +657,7 @@ pub struct InvisibleCharFinding {
 pub enum InvisibleCharCategory {
     UnicodeTag,      // U+E0000〜U+E007F
     NullByte,        // U+0000
-    C0Control,       // U+0001〜0008, 000B〜000C, 000E〜001F
+    C0Control,       // U+0001〜0008, 000E〜001F
     C1Control,       // U+0080〜009F
 }
 
@@ -790,7 +789,7 @@ frame-src 'none';
 
 | capability | 設定 | 根拠 |
 |-----------|------|------|
-| `fs` | vault配下のみ許可 | パストラバーサル防止、`canonicalize` + `starts_with` 検証を全ファイルアクセス関数の入口に配置 |
+| `fs` | vault配下のみ許可 | 独自コマンドに集約|
 | `http` | デフォルト無効 | qwertは外部URL取得機能を持たない |
 | `shell` | 全面不許可 | 任意コマンド実行経路を構造的に閉じる |
 | `dialog` | ファイル選択のみ許可 | Vault選択時の OpenDialog のみ |
@@ -1327,7 +1326,6 @@ similar = "2"                     # v6追加: unified diff
 # src-tauri
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
-tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 qwert-core = { path = "../crates/qwert-core" }
 serde = { version = "1", features = ["derive"] }
@@ -1508,18 +1506,18 @@ default_format = "auto"          # v6追加: "auto" | "json" | "text"
 初回起動時は全行コメントアウトのテンプレートを生成する。値が未指定の項目にはqwertビルトインのデフォルトが適用される。
 
 ```toml
-# qwert appearance configuration (global) 
-# 
-# This file is loaded once at startup. Changes take 
-# effect on next launch. 
-# For per-vault settings with immediate reflection, 
-# place vault/.qwert/appearance.toml instead. 
-# 
-# Use EITHER [color] preset OR fg+bg, not both 
-# (they are mutually exclusive). 
-# 
-# Keys under [color.advanced] map directly to 
-# CSS Custom Properties (--qw-*). Not exposed in the 
+# qwert appearance configuration (global)
+#
+# This file is loaded once at startup. Changes take
+# effect on next launch.
+# For per-vault settings with immediate reflection,
+# place vault/.qwert/appearance.toml instead.
+#
+# Use EITHER [color] preset OR fg+bg, not both
+# (they are mutually exclusive).
+#
+# Keys under [color.advanced] map directly to
+# CSS Custom Properties (--qw-*). Not exposed in the
 # UI, not guaranteed stable across versions.
 
 [text]

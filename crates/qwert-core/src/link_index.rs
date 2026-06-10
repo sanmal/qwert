@@ -224,15 +224,17 @@ pub(crate) fn excluded_ranges(content: &str) -> Vec<Range<usize>> {
         ranges.push(r);
     }
 
-    // 2. Code blocks (fenced + indented) via pulldown-cmark.
-    //    `Start(CodeBlock)` and `End(CodeBlock)` both carry the ENTIRE block
-    //    range, so one event is enough to record the exclusion zone.
+    // 2. Code spans via pulldown-cmark — a single source of truth shared by
+    //    extract / replace / backlinks:
+    //    - `Start(CodeBlock)` carries the ENTIRE fenced/indented block range.
+    //    - `Code` is an inline code span (`` `[[A]]` ``); its range covers the
+    //      span including the backticks.
     let opts = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_GFM;
     for (event, range) in Parser::new_ext(content, opts).into_offset_iter() {
-        if matches!(event, Event::Start(Tag::CodeBlock(_))) {
+        if matches!(event, Event::Start(Tag::CodeBlock(_)) | Event::Code(_)) {
             ranges.push(range);
         }
     }
@@ -305,6 +307,38 @@ mod tests {
     fn indented_code_block_not_extracted() {
         // 4-space indented code block
         let md = "text\n\n    [[X]] indented\n\n[[Y]] normal\n";
+        let links = extract_wikilinks(md);
+        assert!(
+            links.iter().all(|l| l.target != "X"),
+            "X must be excluded: {links:?}"
+        );
+        assert!(
+            links.iter().any(|l| l.target == "Y"),
+            "Y must be present: {links:?}"
+        );
+    }
+
+    #[test]
+    fn inline_code_span_not_extracted() {
+        // `[[X]]` inside an inline code span must be excluded, while a plain
+        // `[[Y]]` on the same line is still extracted.
+        let md = "use `[[X]]` literally but link [[Y]]\n";
+        let links = extract_wikilinks(md);
+        assert!(
+            links.iter().all(|l| l.target != "X"),
+            "X must be excluded: {links:?}"
+        );
+        assert!(
+            links.iter().any(|l| l.target == "Y"),
+            "Y must be present: {links:?}"
+        );
+    }
+
+    #[test]
+    fn inline_code_does_not_break_fence_or_text() {
+        // Existing behaviour stays unchanged: fenced [[X]] excluded, plain
+        // [[Y]] extracted, even alongside an inline code span.
+        let md = "intro `code`\n```\n[[X]] in fence\n```\nafter [[Y]]\n";
         let links = extract_wikilinks(md);
         assert!(
             links.iter().all(|l| l.target != "X"),
@@ -448,6 +482,17 @@ mod tests {
         assert_eq!(normalize_name(nfc), normalize_name(nfd));
     }
 
+    // ── replace_wikilinks ─────────────────────────────────────────────────────
+
+    #[test]
+    fn replace_skips_inline_code_span() {
+        // `[[A]]` inside an inline code span must NOT be rewritten, while a
+        // plain [[A]] is renamed to [[B]].
+        let md = "rename `[[A]]` but link [[A]] here\n";
+        let out = replace_wikilinks(md, "A", "B");
+        assert_eq!(out, "rename `[[A]]` but link [[B]] here\n");
+    }
+
     // ── build_backlinks ───────────────────────────────────────────────────────
 
     fn make_vault() -> TempDir {
@@ -495,6 +540,21 @@ mod tests {
 
         let sources = build_backlinks(root, "auth").unwrap();
         // Only the one outside the code block should be counted
+        assert_eq!(sources[0].wikilink_count, 1);
+    }
+
+    #[test]
+    fn backlinks_excludes_inline_code_spans() {
+        let vault = make_vault();
+        let root = vault.path();
+        fs::write(
+            root.join("ref.md"),
+            "literal `[[auth]]` then real [[auth]]\n",
+        )
+        .unwrap();
+
+        let sources = build_backlinks(root, "auth").unwrap();
+        // Only the link outside the inline code span should be counted.
         assert_eq!(sources[0].wikilink_count, 1);
     }
 

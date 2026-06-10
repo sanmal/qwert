@@ -2,7 +2,7 @@
 
 Rust(Tauri 2) + SolidJS の軽量 Markdown ノートアプリ。AI エージェントと
 それを扱う人間向けの SDD（仕様書駆動開発）基盤。
-完全な仕様は docs/qwert_仕様要件書_v10.md 本書中の §N 参照）。本ファイルと docs/qwert_仕様要件書_v10.md が食い違う場合は
+完全な仕様は docs/仕様要件書_v11.md 本書中の §N 参照）。本ファイルと docs/qwert_仕様要件書_v10.md が食い違う場合は
 docs/qwert_仕様要件書_v10.md を正とし、不明点は勝手に解釈せず必ず質問する。
 
 ## 5層 well（設計の柱）
