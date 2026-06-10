@@ -33,6 +33,11 @@ export default function App() {
       if (file) await tauri.writeFile(file, editorStore.content());
     });
 
+    // C2: vault appearance.toml の直接編集 → 300ms debounce 後に CSS 変数を再適用。
+    void listen<Record<string, string>>("appearance-changed", (event) => {
+      appearanceStore.reapplyAppearance(event.payload);
+    });
+
     void listen<string>("file-changed", (event) => {
       const changedPath = event.payload;
       const currentFile = vaultStore.selectedFile();

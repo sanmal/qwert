@@ -1,6 +1,9 @@
+use notify::{EventKind, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -146,14 +149,189 @@ pub fn load_global_appearance() -> crate::Result<AppearanceConfig> {
     Ok(config)
 }
 
+/// Path to a vault's scoped appearance file (`<vault>/.qwert/appearance.toml`).
+/// Single source of truth shared by the loader (C1) and the watcher (C2).
+pub fn vault_appearance_path(vault_root: &Path) -> PathBuf {
+    vault_root.join(".qwert").join("appearance.toml")
+}
+
 pub fn load_vault_appearance(vault_root: &Path) -> crate::Result<Option<AppearanceConfig>> {
-    let path = vault_root.join(".qwert").join("appearance.toml");
+    let path = vault_appearance_path(vault_root);
     if !path.exists() {
         return Ok(None);
     }
     let content = std::fs::read_to_string(&path)?;
     let config: AppearanceConfig = toml::from_str(&content)?;
     Ok(Some(config))
+}
+
+/// The scope from which the effective appearance config was loaded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppearanceScope {
+    /// Global config (`<config_dir>/appearance.toml`).
+    #[default]
+    Global,
+    /// Vault-scoped config (`<vault>/.qwert/appearance.toml`).
+    Vault,
+}
+
+impl AppearanceScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AppearanceScope::Global => "global",
+            AppearanceScope::Vault => "vault",
+        }
+    }
+}
+
+/// Deterministic scope resolution: if a vault-scoped config is present it is
+/// adopted **exclusively** (no merge with global); otherwise the global config
+/// is used. This two-choice rule keeps appearance resolution predictable —
+/// values from the two scopes are never combined.
+pub fn resolve_appearance_scope(
+    vault: Option<AppearanceConfig>,
+    global: AppearanceConfig,
+) -> (AppearanceConfig, AppearanceScope) {
+    match vault {
+        Some(vault_cfg) => (vault_cfg, AppearanceScope::Vault),
+        None => (global, AppearanceScope::Global),
+    }
+}
+
+/// Resolve the effective appearance config and the scope it came from.
+///
+/// When `vault_root` is `Some` and `<vault>/.qwert/appearance.toml` exists, the
+/// vault config is returned with [`AppearanceScope::Vault`] and the global
+/// config is **not** read or merged. Otherwise the global config is returned
+/// with [`AppearanceScope::Global`].
+pub fn resolve_appearance(
+    vault_root: Option<&Path>,
+) -> crate::Result<(AppearanceConfig, AppearanceScope)> {
+    if let Some(root) = vault_root
+        && let Some(vault_cfg) = load_vault_appearance(root)?
+    {
+        return Ok((vault_cfg, AppearanceScope::Vault));
+    }
+    Ok((load_global_appearance()?, AppearanceScope::Global))
+}
+
+// ─── Hot reload (C2) ──────────────────────────────────────────────────────────
+
+/// Debounce window for appearance hot-reload: a burst of file events is
+/// coalesced and processed once after this much quiet time.
+pub const APPEARANCE_DEBOUNCE: Duration = Duration::from_millis(300);
+
+/// Trailing-edge debounce, expressed as a pure function for testing.
+///
+/// Given event arrival times in milliseconds (ascending) and a debounce
+/// `window_ms`, return the times at which a fire would occur. Consecutive
+/// events no more than `window_ms` apart belong to the same burst and produce
+/// a single fire `window_ms` after the burst's last event. This mirrors the
+/// runtime behaviour of [`watch_vault_appearance`] (which uses
+/// `recv_timeout(window)` instead of explicit timestamps).
+pub fn debounce_trailing(events_ms: &[u64], window_ms: u64) -> Vec<u64> {
+    let mut fires = Vec::new();
+    for (i, &t) in events_ms.iter().enumerate() {
+        let burst_ends_here = match events_ms.get(i + 1) {
+            // Next event arrives after the window → this event ends a burst.
+            Some(&next) => next.saturating_sub(t) > window_ms,
+            // Last event always ends a burst.
+            None => true,
+        };
+        if burst_ends_here {
+            fires.push(t + window_ms);
+        }
+    }
+    fires
+}
+
+/// Handle for a vault appearance watcher; dropping it stops the watch.
+pub struct AppearanceWatchGuard {
+    _watcher: notify::RecommendedWatcher,
+}
+
+/// Read and parse the appearance file, retrying briefly so a partially-written
+/// file (direct, non-atomic edit) is not parsed mid-write. Returns `None` if it
+/// never parses cleanly within the retry budget — the caller (C3) decides how to
+/// surface that; this task only acts on successful parses.
+fn read_appearance_with_retry(path: &Path) -> Option<AppearanceConfig> {
+    const RETRIES: u32 = 5;
+    const DELAY: Duration = Duration::from_millis(20);
+    for attempt in 0..RETRIES {
+        if let Ok(content) = std::fs::read_to_string(path)
+            && let Ok(config) = toml::from_str::<AppearanceConfig>(&content)
+        {
+            return Some(config);
+        }
+        if attempt + 1 < RETRIES {
+            std::thread::sleep(DELAY);
+        }
+    }
+    None
+}
+
+/// Watch a vault's `.qwert/appearance.toml` for direct edits and invoke
+/// `callback` with the freshly parsed config, debounced by [`APPEARANCE_DEBOUNCE`].
+///
+/// The parent `.qwert` directory is watched **non-recursively** (not the whole
+/// vault) so that atomic writes (tmp → rename, which swap the file's inode) are
+/// still observed, while large vaults incur no traversal cost. The callback runs
+/// on a background thread (`Send + 'static`). Drop the returned guard to stop.
+pub fn watch_vault_appearance<F>(
+    vault_root: &Path,
+    callback: F,
+) -> crate::Result<AppearanceWatchGuard>
+where
+    F: Fn(AppearanceConfig) + Send + 'static,
+{
+    let file_path = vault_appearance_path(vault_root);
+    let watch_dir = file_path
+        .parent()
+        .ok_or_else(|| crate::CoreError::NotFound("appearance.toml parent".to_owned()))?
+        .to_path_buf();
+    // The directory must exist to watch it; it is qwert's own config dir.
+    std::fs::create_dir_all(&watch_dir)?;
+
+    let (tx, rx) = mpsc::channel::<()>();
+    let target = file_path.clone();
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(event) = res
+            && matches!(
+                event.kind,
+                EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+            )
+            && event.paths.iter().any(|p| p == &target)
+        {
+            let _ = tx.send(());
+        }
+    })
+    .map_err(|e| crate::CoreError::Io(std::io::Error::other(e)))?;
+
+    watcher
+        .watch(&watch_dir, RecursiveMode::NonRecursive)
+        .map_err(|e| crate::CoreError::Io(std::io::Error::other(e)))?;
+
+    std::thread::spawn(move || {
+        // Trailing-edge debounce: after the first event, keep resetting the
+        // timer while events keep arriving; fire once the file goes quiet.
+        while rx.recv().is_ok() {
+            loop {
+                match rx.recv_timeout(APPEARANCE_DEBOUNCE) {
+                    Ok(()) => continue,                            // still bursting → keep waiting
+                    Err(mpsc::RecvTimeoutError::Timeout) => break, // quiet → fire
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            // Only act on a clean parse. A persistently-invalid file is C3's
+            // concern (keep previous + transient warning); the hook is here.
+            if let Some(config) = read_appearance_with_retry(&file_path) {
+                callback(config);
+            }
+        }
+    });
+
+    Ok(AppearanceWatchGuard { _watcher: watcher })
 }
 
 pub fn to_css_vars(config: &AppearanceConfig) -> crate::Result<HashMap<String, String>> {
@@ -468,6 +646,118 @@ mod tests {
             let vars = to_css_vars(&config).unwrap();
             assert_eq!(vars.get("data-theme").map(|s| s.as_str()), Some(*preset));
         }
+    }
+
+    // ─── scope resolution (C1) ────────────────────────────────────────────────
+
+    fn config_with_fg_bg(fg: &str, bg: &str) -> AppearanceConfig {
+        AppearanceConfig {
+            color: ColorConfig {
+                fg: Some(fg.to_owned()),
+                bg: Some(bg.to_owned()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn vault_scope_is_used_exclusively_no_merge() {
+        // vault: preset = "dark"; global: custom fg/bg.
+        let vault = config_with_preset("dark");
+        let global = config_with_fg_bg("#111111", "#eeeeee");
+
+        let (resolved, scope) = resolve_appearance_scope(Some(vault), global);
+
+        assert_eq!(scope, AppearanceScope::Vault);
+        assert_eq!(resolved.color.preset.as_deref(), Some("dark"));
+        // Global fg/bg must NOT leak in — no merge.
+        assert_eq!(resolved.color.fg, None);
+        assert_eq!(resolved.color.bg, None);
+    }
+
+    #[test]
+    fn global_scope_used_when_no_vault() {
+        let global = config_with_fg_bg("#111111", "#eeeeee");
+        let (resolved, scope) = resolve_appearance_scope(None, global);
+
+        assert_eq!(scope, AppearanceScope::Global);
+        assert_eq!(resolved.color.fg.as_deref(), Some("#111111"));
+        assert_eq!(resolved.color.bg.as_deref(), Some("#eeeeee"));
+    }
+
+    #[test]
+    fn resolve_appearance_reads_vault_file_and_reports_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        std::fs::write(
+            root.join(".qwert").join("appearance.toml"),
+            "[color]\npreset = \"dark\"\n",
+        )
+        .unwrap();
+
+        let (resolved, scope) = resolve_appearance(Some(root)).unwrap();
+        assert_eq!(scope, AppearanceScope::Vault);
+        assert_eq!(resolved.color.preset.as_deref(), Some("dark"));
+    }
+
+    #[test]
+    fn resolve_appearance_falls_back_to_global_scope_without_vault_file() {
+        // Empty vault (no .qwert/appearance.toml) → Global scope regardless of
+        // whatever the global config happens to contain in this environment.
+        let dir = tempfile::tempdir().unwrap();
+        let (_resolved, scope) = resolve_appearance(Some(dir.path())).unwrap();
+        assert_eq!(scope, AppearanceScope::Global);
+    }
+
+    #[test]
+    fn appearance_scope_as_str() {
+        assert_eq!(AppearanceScope::Global.as_str(), "global");
+        assert_eq!(AppearanceScope::Vault.as_str(), "vault");
+        assert_eq!(AppearanceScope::default(), AppearanceScope::Global);
+    }
+
+    // ─── hot reload debounce (C2) ─────────────────────────────────────────────
+
+    #[test]
+    fn vault_appearance_path_is_dot_qwert() {
+        let p = vault_appearance_path(Path::new("/vault"));
+        assert!(p.ends_with(".qwert/appearance.toml"), "{p:?}");
+    }
+
+    #[test]
+    fn debounce_coalesces_a_burst_into_one_fire() {
+        // 5 events within the 300ms window collapse to a single trailing fire.
+        let events = [0, 50, 120, 200, 280];
+        let fires = debounce_trailing(&events, 300);
+        assert_eq!(fires, vec![280 + 300], "burst must coalesce to one fire");
+    }
+
+    #[test]
+    fn debounce_separates_bursts_beyond_the_window() {
+        // Gap of >300ms between the two clusters → two fires.
+        let events = [0, 100, 700, 750];
+        let fires = debounce_trailing(&events, 300);
+        assert_eq!(fires, vec![100 + 300, 750 + 300]);
+    }
+
+    #[test]
+    fn debounce_single_event_fires_once() {
+        assert_eq!(debounce_trailing(&[42], 300), vec![342]);
+    }
+
+    #[test]
+    fn debounce_no_events_no_fire() {
+        assert!(debounce_trailing(&[], 300).is_empty());
+    }
+
+    #[test]
+    fn debounce_gap_exactly_window_stays_in_burst() {
+        // next - t == window is NOT > window, so it remains one burst.
+        let events = [0, 300, 600];
+        let fires = debounce_trailing(&events, 300);
+        assert_eq!(fires, vec![600 + 300]);
     }
 
     // ─── contrast_ratio ───────────────────────────────────────────────────────

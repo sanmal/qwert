@@ -79,6 +79,12 @@ pub async fn open_vault_dialog(
         *state.watch_guard.lock().unwrap() = Some(guard);
     }
 
+    // C2: vault appearance.toml のホットリロード監視を開始（前 vault の guard は置換で停止）。
+    match crate::commands::appearance::watch_appearance(app.clone(), &canonical) {
+        Ok(guard) => *state.appearance_watch_guard.lock().unwrap() = Some(guard),
+        Err(e) => eprintln!("appearance watch warning (non-fatal): {e}"),
+    }
+
     Ok(Some(canonical.to_string_lossy().into_owned()))
 }
 
