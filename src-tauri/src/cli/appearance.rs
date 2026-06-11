@@ -1,10 +1,10 @@
 use qwert_core::appearance::{
-    contrast_ratio, global_config_path, load_global_appearance, load_vault_appearance,
-    save_global_appearance, save_vault_appearance, vault_appearance_path, wcag_level,
-    ALLOWED_PRESETS, APPEARANCE_TEMPLATE,
+    compute_appearance_status, contrast_ratio, global_config_path, load_global_appearance,
+    load_vault_appearance, save_global_appearance, save_vault_appearance, vault_appearance_path,
+    wcag_level, ALLOWED_PRESETS, APPEARANCE_TEMPLATE,
 };
 use qwert_core::error::ActionableError;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::cli::{emit_core_error, exit_code::ExitCode, format::OutputFormat};
 
@@ -274,6 +274,38 @@ pub fn execute_set(args: SetArgs) -> i32 {
     ExitCode::Success.as_i32()
 }
 
+// ─── appearance status ────────────────────────────────────────────────────────
+
+pub fn execute_status(format: OutputFormat, vault_root: &Path) -> i32 {
+    let status = compute_appearance_status(Some(vault_root));
+
+    match format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&status).unwrap_or_default()
+            );
+        }
+        _ => {
+            println!("Scope:    {}", status.scope.as_str());
+            if let Some(ref p) = status.preset {
+                println!("Preset:   {p}");
+            }
+            if let Some(ref fg) = status.fg {
+                println!("FG:       {fg}");
+            }
+            if let Some(ref bg) = status.bg {
+                println!("BG:       {bg}");
+            }
+            match (status.contrast_ratio, status.level.as_deref()) {
+                (Some(ratio), Some(level)) => println!("Contrast: {ratio:.2}:1 ({level})"),
+                _ => println!("Contrast: n/a"),
+            }
+        }
+    }
+    ExitCode::Success.as_i32()
+}
+
 // ─── appearance template ──────────────────────────────────────────────────────
 
 pub fn execute_template(format: OutputFormat) -> i32 {
@@ -464,5 +496,43 @@ mod tests {
         let reload = "restart";
         let obj = serde_json::json!({ "reload": reload });
         assert_eq!(obj["reload"], "restart");
+    }
+
+    // ─── C5: execute_status ───────────────────────────────────────────────────
+
+    #[test]
+    fn status_exits_0_for_empty_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let code = execute_status(OutputFormat::Text, dir.path());
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn status_json_envelope_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        std::fs::write(
+            root.join(".qwert").join("appearance.toml"),
+            "[text]\nfont_size = 16\n",
+        )
+        .unwrap();
+        let status = qwert_core::appearance::compute_appearance_status(Some(root));
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["schema_version"], "v1");
+        assert_eq!(json["kind"], "appearance_status");
+        assert!(json.get("scope").is_some(), "scope field must be present");
+        assert!(
+            json.get("contrast_ratio").is_some(),
+            "contrast_ratio field must be present"
+        );
+        assert!(json.get("level").is_some(), "level field must be present");
+    }
+
+    #[test]
+    fn status_json_exits_0() {
+        let dir = tempfile::tempdir().unwrap();
+        let code = execute_status(OutputFormat::Json, dir.path());
+        assert_eq!(code, 0);
     }
 }

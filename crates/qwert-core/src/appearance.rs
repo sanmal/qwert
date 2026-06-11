@@ -582,6 +582,85 @@ pub fn wcag_level(ratio: f64, large: bool) -> &'static str {
     }
 }
 
+// ─── C5: appearance status ───────────────────────────────────────────────────
+
+/// Representative fg/bg hex colors for each built-in preset.
+/// Used to compute WCAG contrast when the active config names a preset rather
+/// than storing explicit hex values. Kept in core so CLI and MCP share one table.
+pub fn preset_fg_bg(preset: &str) -> Option<(&'static str, &'static str)> {
+    match preset {
+        "default" => Some(("#1a1a1a", "#ffffff")),
+        "high-contrast" => Some(("#000000", "#ffffff")),
+        "dark" => Some(("#e5e7eb", "#1f2937")),
+        "dark-high-contrast" => Some(("#ffffff", "#000000")),
+        _ => None,
+    }
+}
+
+/// Full appearance status report: effective configuration plus WCAG contrast metrics.
+#[derive(Debug, Serialize)]
+pub struct AppearanceStatus {
+    pub schema_version: String,
+    pub kind: String,
+    pub scope: AppearanceScope,
+    /// Active preset name (null when using custom fg/bg).
+    pub preset: Option<String>,
+    /// Effective foreground hex — custom value, or preset-representative if a preset
+    /// is active (null when neither is set).
+    pub fg: Option<String>,
+    /// Effective background hex (same source as `fg`).
+    pub bg: Option<String>,
+    /// WCAG 2.x contrast ratio for normal text rounded to 2 decimal places
+    /// (null when fg/bg cannot be determined).
+    pub contrast_ratio: Option<f64>,
+    /// WCAG level for normal text ("AAA" / "AA" / "fail"; null when no fg/bg).
+    pub level: Option<String>,
+    /// Resolved text configuration.
+    pub text: TextConfig,
+    /// Resolved highlight configuration.
+    pub highlight: HighlightConfig,
+}
+
+/// Compute the full appearance status. Always succeeds (falls back to global on
+/// vault config error, matching startup behaviour). When a preset is active, its
+/// representative colors from [`preset_fg_bg`] are used for contrast calculation.
+pub fn compute_appearance_status(vault_root: Option<&Path>) -> AppearanceStatus {
+    let resolution = resolve_appearance_with_fallback(vault_root);
+    let config = &resolution.config;
+
+    let (fg, bg) = if let Some(ref preset) = config.color.preset {
+        preset_fg_bg(preset)
+            .map(|(f, b)| (Some(f.to_owned()), Some(b.to_owned())))
+            .unwrap_or((None, None))
+    } else {
+        (config.color.fg.clone(), config.color.bg.clone())
+    };
+
+    let (contrast, level) = match (&fg, &bg) {
+        (Some(f), Some(b)) => match contrast_ratio(f, b) {
+            Ok(r) => {
+                let r2 = (r * 100.0).round() / 100.0;
+                (Some(r2), Some(wcag_level(r, false).to_owned()))
+            }
+            Err(_) => (None, None),
+        },
+        _ => (None, None),
+    };
+
+    AppearanceStatus {
+        schema_version: "v1".to_owned(),
+        kind: "appearance_status".to_owned(),
+        scope: resolution.scope,
+        preset: config.color.preset.clone(),
+        fg,
+        bg,
+        contrast_ratio: contrast,
+        level,
+        text: config.text.clone(),
+        highlight: config.highlight.clone(),
+    }
+}
+
 // ─── Persistence ──────────────────────────────────────────────────────────────
 
 /// Absolute path to the global `appearance.toml` (may not exist yet).
@@ -614,7 +693,8 @@ pub fn save_vault_appearance(vault_root: &Path, config: &AppearanceConfig) -> cr
     let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
     use std::io::Write as _;
     tmp.write_all(content.as_bytes())?;
-    tmp.persist(&path).map_err(|e| crate::CoreError::Io(e.error))?;
+    tmp.persist(&path)
+        .map_err(|e| crate::CoreError::Io(e.error))?;
     Ok(())
 }
 
@@ -1103,5 +1183,95 @@ mod tests {
         assert_eq!(wcag_level(4.49, true), "AA");
         assert_eq!(wcag_level(3.0, true), "AA");
         assert_eq!(wcag_level(2.99, true), "fail");
+    }
+
+    // ─── C5: preset_fg_bg / compute_appearance_status ────────────────────────
+
+    #[test]
+    fn preset_fg_bg_returns_correct_colors() {
+        assert_eq!(preset_fg_bg("default"), Some(("#1a1a1a", "#ffffff")));
+        assert_eq!(preset_fg_bg("high-contrast"), Some(("#000000", "#ffffff")));
+        assert_eq!(preset_fg_bg("dark"), Some(("#e5e7eb", "#1f2937")));
+        assert_eq!(
+            preset_fg_bg("dark-high-contrast"),
+            Some(("#ffffff", "#000000"))
+        );
+    }
+
+    #[test]
+    fn preset_fg_bg_returns_none_for_unknown() {
+        assert_eq!(preset_fg_bg("neon"), None);
+        assert_eq!(preset_fg_bg(""), None);
+    }
+
+    #[test]
+    fn status_custom_fg_bg_gives_aaa() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        std::fs::write(
+            root.join(".qwert").join("appearance.toml"),
+            "[color]\nfg = \"#1a1a1a\"\nbg = \"#ffffff\"\n",
+        )
+        .unwrap();
+
+        let s = compute_appearance_status(Some(root));
+        assert_eq!(s.scope, AppearanceScope::Vault);
+        assert_eq!(s.fg.as_deref(), Some("#1a1a1a"));
+        assert_eq!(s.bg.as_deref(), Some("#ffffff"));
+        let ratio = s
+            .contrast_ratio
+            .expect("ratio must be Some for known fg/bg");
+        assert!(ratio >= 7.0, "default fg/bg is AAA, got {ratio:.2}");
+        assert_eq!(s.level.as_deref(), Some("AAA"));
+    }
+
+    #[test]
+    fn status_preset_dark_has_ratio_and_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        std::fs::write(
+            root.join(".qwert").join("appearance.toml"),
+            "[color]\npreset = \"dark\"\n",
+        )
+        .unwrap();
+
+        let s = compute_appearance_status(Some(root));
+        assert_eq!(s.scope, AppearanceScope::Vault);
+        assert_eq!(s.preset.as_deref(), Some("dark"));
+        let ratio = s.contrast_ratio.expect("preset must yield a ratio");
+        assert!(
+            ratio >= 4.5,
+            "dark preset should be at least AA, got {ratio:.2}"
+        );
+        assert!(s.level.is_some());
+    }
+
+    #[test]
+    fn status_no_color_config_has_null_ratio() {
+        // A vault config with no [color] section → preset/fg/bg all None.
+        // Uses vault scope so the ambient global config doesn't interfere.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        std::fs::write(
+            root.join(".qwert").join("appearance.toml"),
+            "[text]\nfont_size = 16\n",
+        )
+        .unwrap();
+
+        let s = compute_appearance_status(Some(root));
+        assert_eq!(s.scope, AppearanceScope::Vault);
+        assert!(s.contrast_ratio.is_none(), "no-color config has no ratio");
+        assert!(s.level.is_none(), "no-color config has no level");
+    }
+
+    #[test]
+    fn status_schema_envelope_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = compute_appearance_status(Some(dir.path()));
+        assert_eq!(s.schema_version, "v1");
+        assert_eq!(s.kind, "appearance_status");
     }
 }

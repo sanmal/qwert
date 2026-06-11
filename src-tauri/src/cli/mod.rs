@@ -297,6 +297,12 @@ pub enum AppearanceCmd {
         #[arg(long, default_value = "text")]
         format: OutputFormat,
     },
+    /// Show the effective appearance configuration and WCAG contrast status
+    Status {
+        /// Output format: json (default) | text
+        #[arg(long, default_value = "json")]
+        format: OutputFormat,
+    },
 }
 
 /// Returns process exit code.
@@ -392,6 +398,7 @@ fn dispatch(command: Command, vault_root: &Path) -> i32 {
                 format,
             }),
             AppearanceCmd::Template { format } => appearance::execute_template(format),
+            AppearanceCmd::Status { format } => appearance::execute_status(format, vault_root),
         },
 
         // Short aliases
@@ -925,6 +932,18 @@ mod tests {
             panic!("wrong command");
         };
         assert_eq!(format, OutputFormat::Text);
+    }
+
+    #[test]
+    fn appearance_status_default_format_is_json() {
+        let cli = Cli::parse_from(["qwert", "appearance", "status"]);
+        let Command::Appearance {
+            cmd: AppearanceCmd::Status { format },
+        } = cli.command
+        else {
+            panic!("wrong command");
+        };
+        assert_eq!(format, OutputFormat::Json);
     }
 
     #[test]
