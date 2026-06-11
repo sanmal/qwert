@@ -171,6 +171,9 @@ Example Claude Desktop config:
 }
 ```
 
+For full setup instructions, binary path details, available tools, and troubleshooting see
+**[docs/mcp-setup.md](docs/mcp-setup.md)**.
+
 ## Configuration
 
 Settings are split into two files (XDG paths):
