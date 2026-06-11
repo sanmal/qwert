@@ -1,5 +1,6 @@
 pub mod cli;
 mod commands;
+pub mod mcp;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -39,6 +40,7 @@ pub fn run() {
             commands::vault::get_vault_status,
             commands::markdown::render_markdown,
             commands::appearance::load_appearance,
+            commands::appearance::get_appearance_status,
             commands::link::get_backlinks,
             commands::link::resolve_wikilink,
             commands::revision::plan_revision_note,

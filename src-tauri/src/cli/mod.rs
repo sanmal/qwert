@@ -74,7 +74,7 @@ pub enum Command {
         cmd: AppearanceCmd,
     },
 
-    /// MCP server mode (Phase 3, not yet available)
+    /// MCP server mode (stdio JSON-RPC)
     Mcp,
 
     /// Describe a subcommand schema (Phase 3; shows --help for now)
@@ -308,6 +308,12 @@ pub enum AppearanceCmd {
 /// Returns process exit code.
 pub fn run() -> i32 {
     let cli = Cli::parse();
+
+    if matches!(cli.command, Command::Mcp) && cli.vault.is_none() {
+        eprintln!("error: mcp requires --vault <path>");
+        return ExitCode::Usage.as_i32();
+    }
+
     let vault_root = cli
         .vault
         .or_else(|| std::env::current_dir().ok())
@@ -443,8 +449,11 @@ fn dispatch(command: Command, vault_root: &Path) -> i32 {
         Command::GenerateMan => generate_man(),
 
         Command::Mcp => {
-            eprintln!("MCP server mode is not yet supported (Phase 3)");
-            ExitCode::Usage.as_i32()
+            let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| {
+                eprintln!("failed to create tokio runtime: {e}");
+                std::process::exit(ExitCode::General.as_i32());
+            });
+            rt.block_on(crate::mcp::run_server(vault_root.to_path_buf()))
         }
 
         Command::Describe { .. } => {

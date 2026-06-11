@@ -2,8 +2,8 @@ import { createSignal } from "solid-js";
 import * as tauri from "../lib/tauri";
 
 const [loaded, setLoaded] = createSignal(false);
-const [currentFg, setCurrentFg] = createSignal<string | null>(null);
-const [currentBg, setCurrentBg] = createSignal<string | null>(null);
+// C9: increments on every applyVars call; StatusBar uses it to trigger IPC refetch.
+const [appearanceVersion, setAppearanceVersion] = createSignal(1);
 // C3: non-null when appearance.toml had a parse/conflict error.
 const [currentWarning, setCurrentWarning] = createSignal<string | null>(null);
 
@@ -35,13 +35,8 @@ function applyVars(map: Record<string, string>) {
     // Unknown keys are ignored.
   }
 
-  // Read resolved CSS vars so StatusBar can display the contrast ratio.
-  // getComputedStyle reads the full cascade (including [data-theme] attribute rules).
-  const style = getComputedStyle(document.documentElement);
-  const fg = style.getPropertyValue("--qw-fg").trim();
-  const bg = style.getPropertyValue("--qw-bg").trim();
-  setCurrentFg(fg || null);
-  setCurrentBg(bg || null);
+  // C9: bump version so StatusBar's createResource refetches from Rust IPC.
+  setAppearanceVersion((v) => v + 1);
 }
 
 async function applyAppearance() {
@@ -70,7 +65,6 @@ export const appearanceStore = {
   reapplyAppearance,
   setAppearanceWarning,
   loaded,
-  currentFg,
-  currentBg,
+  appearanceVersion,
   currentWarning,
 };

@@ -42,6 +42,34 @@ export async function loadAppearance(): Promise<Record<string, string>> {
   return invoke<Record<string, string>>("load_appearance");
 }
 
+// ── Appearance status (C9) ─────────────────────────────────────────────────────
+
+export interface AppearanceStatus {
+  schema_version: string;
+  kind: string;
+  scope: "global" | "vault";
+  preset: string | null;
+  fg: string | null;
+  bg: string | null;
+  /** WCAG 2.x contrast ratio rounded to 2 decimal places, or null when no colors. */
+  contrast_ratio: number | null;
+  /** "AAA" | "AA" | "fail" for normal text, or null when no colors. */
+  level: string | null;
+  text: {
+    font_size: number;
+    font_family: string;
+    line_height: number;
+    letter_spacing: number;
+    word_spacing: number;
+    editor_max_width: number;
+  };
+  highlight: { enabled: boolean };
+}
+
+export async function getAppearanceStatus(): Promise<AppearanceStatus> {
+  return invoke<AppearanceStatus>("get_appearance_status");
+}
+
 // ── Vault status ───────────────────────────────────────────────────────────────
 
 export interface SyncConflict {
