@@ -383,7 +383,7 @@ fn build_diff_file(
 }
 
 /// Returns today's date in YYYYMMDD format using only `std`.
-fn today_yyyymmdd() -> String {
+pub(crate) fn today_yyyymmdd() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
