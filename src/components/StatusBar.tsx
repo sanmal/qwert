@@ -50,6 +50,13 @@ export function StatusBar() {
           </span>
         )}
       </Show>
+      <Show when={appearanceStore.currentWarning()}>
+        {(msg) => (
+          <span class="status-warn" title={msg()}>
+            ⚠ appearance
+          </span>
+        )}
+      </Show>
       <span>{saveLabel()}</span>
     </div>
   );

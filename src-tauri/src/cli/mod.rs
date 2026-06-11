@@ -272,7 +272,7 @@ pub enum AppearanceCmd {
         #[arg(long, default_value = "text")]
         format: OutputFormat,
     },
-    /// Set global appearance configuration
+    /// Set appearance configuration (vault scope by default)
     Set {
         /// Apply a named color preset
         #[arg(long)]
@@ -286,8 +286,8 @@ pub enum AppearanceCmd {
         /// Reject custom fg/bg if WCAG AA contrast (4.5) is not met
         #[arg(long)]
         require_aa: bool,
-        /// Configuration scope (only 'global' in Phase 2)
-        #[arg(long, default_value = "global")]
+        /// Configuration scope: vault (default) or global
+        #[arg(long, default_value = "vault")]
         scope: String,
         #[arg(long, default_value = "text")]
         format: OutputFormat,
@@ -388,6 +388,7 @@ fn dispatch(command: Command, vault_root: &Path) -> i32 {
                 bg,
                 require_aa,
                 scope,
+                vault_root: vault_root.to_path_buf(),
                 format,
             }),
             AppearanceCmd::Template { format } => appearance::execute_template(format),
@@ -880,7 +881,8 @@ mod tests {
     }
 
     #[test]
-    fn appearance_set_default_scope_is_global() {
+    fn appearance_set_default_scope_is_vault() {
+        // C4: default changed from "global" (Phase 2 暫定) to "vault".
         let cli = Cli::parse_from(["qwert", "appearance", "set", "--preset", "dark"]);
         let Command::Appearance {
             cmd: AppearanceCmd::Set { scope, .. },
@@ -888,7 +890,7 @@ mod tests {
         else {
             panic!("wrong command");
         };
-        assert_eq!(scope, "global");
+        assert_eq!(scope, "vault");
     }
 
     #[test]

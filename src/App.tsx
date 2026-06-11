@@ -38,6 +38,11 @@ export default function App() {
       appearanceStore.reapplyAppearance(event.payload);
     });
 
+    // C3: 不正 TOML / 相互排他違反 → 直前の見た目を維持し、StatusBar に警告を表示。
+    void listen<string>("appearance-warning", (event) => {
+      appearanceStore.setAppearanceWarning(event.payload);
+    });
+
     void listen<string>("file-changed", (event) => {
       const changedPath = event.payload;
       const currentFile = vaultStore.selectedFile();

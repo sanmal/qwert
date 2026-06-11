@@ -4,6 +4,8 @@ import * as tauri from "../lib/tauri";
 const [loaded, setLoaded] = createSignal(false);
 const [currentFg, setCurrentFg] = createSignal<string | null>(null);
 const [currentBg, setCurrentBg] = createSignal<string | null>(null);
+// C3: non-null when appearance.toml had a parse/conflict error.
+const [currentWarning, setCurrentWarning] = createSignal<string | null>(null);
 
 // Remove every qwert-managed inline custom property and the data-theme
 // attribute so a re-apply starts from a clean slate (e.g. switching from custom
@@ -51,14 +53,24 @@ async function applyAppearance() {
 
 // C2: hot-reload entry point. Re-applies on every appearance-changed event —
 // deliberately bypasses the loaded() guard (which is initial-load only).
+// Also clears any outstanding C3 warning (config is valid again).
 function reapplyAppearance(map: Record<string, string>) {
   applyVars(map);
+  setCurrentWarning(null);
+}
+
+// C3: record a warning from a failed parse / conflict. The previous visual
+// state is NOT changed — the caller must not call applyVars on error.
+function setAppearanceWarning(msg: string) {
+  setCurrentWarning(msg);
 }
 
 export const appearanceStore = {
   applyAppearance,
   reapplyAppearance,
+  setAppearanceWarning,
   loaded,
   currentFg,
   currentBg,
+  currentWarning,
 };

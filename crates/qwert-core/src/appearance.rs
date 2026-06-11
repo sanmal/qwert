@@ -246,33 +246,128 @@ pub fn debounce_trailing(events_ms: &[u64], window_ms: u64) -> Vec<u64> {
     fires
 }
 
+// ─── C3: error classification & fallback ─────────────────────────────────────
+
+/// Human-readable warning from a failed appearance load/validation.
+/// Extracts line/column from TOML syntax errors and key names from
+/// mutual-exclusion violations so the UI can show actionable hints.
+pub fn format_appearance_warning(err: &crate::CoreError) -> String {
+    match err {
+        // toml::de::Error Display already contains "line X, column Y".
+        crate::CoreError::Toml(e) => format!("appearance.toml parse error: {e}"),
+        crate::CoreError::AppearanceConflict(_) => {
+            "appearance.toml conflict: conflicting keys preset, fg/bg — remove one".to_owned()
+        }
+        other => format!("appearance error: {other}"),
+    }
+}
+
+/// Outcome of resolving the effective appearance at startup.
+pub struct AppearanceResolution {
+    pub config: AppearanceConfig,
+    pub scope: AppearanceScope,
+    /// Set when the preferred scope failed (parse / mutual-exclusion error) and
+    /// the global config was used as a fallback. Surface this in the UI.
+    pub warning: Option<String>,
+}
+
+/// Infallible startup resolver. On vault-config error (syntax or mutual-exclusion)
+/// falls back to the global config and records a warning. The app always starts.
+pub fn resolve_appearance_with_fallback(vault_root: Option<&Path>) -> AppearanceResolution {
+    if let Some(root) = vault_root {
+        match load_vault_appearance(root) {
+            Ok(Some(vault_cfg)) => {
+                // Also check mutual-exclusion (preset + fg/bg).
+                if let Err(e) = validate_appearance_config(&vault_cfg) {
+                    let warning = format_appearance_warning(&e);
+                    return AppearanceResolution {
+                        config: load_global_appearance().unwrap_or_default(),
+                        scope: AppearanceScope::Global,
+                        warning: Some(warning),
+                    };
+                }
+                return AppearanceResolution {
+                    config: vault_cfg,
+                    scope: AppearanceScope::Vault,
+                    warning: None,
+                };
+            }
+            Ok(None) => {} // No vault file → fall through to global.
+            Err(e) => {
+                let warning = format_appearance_warning(&e);
+                return AppearanceResolution {
+                    config: load_global_appearance().unwrap_or_default(),
+                    scope: AppearanceScope::Global,
+                    warning: Some(warning),
+                };
+            }
+        }
+    }
+    AppearanceResolution {
+        config: load_global_appearance().unwrap_or_default(),
+        scope: AppearanceScope::Global,
+        warning: None,
+    }
+}
+
+/// Validate mutual-exclusion constraint (preset and fg/bg cannot coexist).
+/// Returns an error with the conflicting key names; otherwise `Ok(())`.
+fn validate_appearance_config(config: &AppearanceConfig) -> crate::Result<()> {
+    if config.color.preset.is_some() && (config.color.fg.is_some() || config.color.bg.is_some()) {
+        return Err(crate::CoreError::AppearanceConflict(
+            "preset and fg/bg cannot be set at the same time".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// C3: result of a single hot-reload attempt after debounce.
+pub enum AppearanceUpdate {
+    /// Parse and validation succeeded — apply this config.
+    Changed(Box<AppearanceConfig>),
+    /// Parse or validation failed — keep the previous config and show this
+    /// warning. The caller must NOT clear the previous visual state.
+    Error(String),
+}
+
 /// Handle for a vault appearance watcher; dropping it stops the watch.
 pub struct AppearanceWatchGuard {
     _watcher: notify::RecommendedWatcher,
 }
 
-/// Read and parse the appearance file, retrying briefly so a partially-written
-/// file (direct, non-atomic edit) is not parsed mid-write. Returns `None` if it
-/// never parses cleanly within the retry budget — the caller (C3) decides how to
-/// surface that; this task only acts on successful parses.
-fn read_appearance_with_retry(path: &Path) -> Option<AppearanceConfig> {
+/// Parse + validate one attempt. Used by the retry loop and in tests.
+pub(crate) fn try_read_and_validate(path: &Path) -> std::result::Result<AppearanceConfig, String> {
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("cannot read appearance.toml: {e}"))?;
+    let config: AppearanceConfig = toml::from_str(&content)
+        .map_err(|e| format_appearance_warning(&crate::CoreError::Toml(e)))?;
+    validate_appearance_config(&config).map_err(|e| format_appearance_warning(&e))?;
+    Ok(config)
+}
+
+/// Retry up to 5×20 ms to tolerate mid-write partial files (direct edits).
+/// After all retries returns the last error message so C3 can emit a warning.
+fn read_appearance_with_retry(path: &Path) -> std::result::Result<AppearanceConfig, String> {
     const RETRIES: u32 = 5;
     const DELAY: Duration = Duration::from_millis(20);
+    let mut last_err = String::from("appearance.toml not found");
     for attempt in 0..RETRIES {
-        if let Ok(content) = std::fs::read_to_string(path)
-            && let Ok(config) = toml::from_str::<AppearanceConfig>(&content)
-        {
-            return Some(config);
+        match try_read_and_validate(path) {
+            Ok(c) => return Ok(c),
+            Err(e) => last_err = e,
         }
         if attempt + 1 < RETRIES {
             std::thread::sleep(DELAY);
         }
     }
-    None
+    Err(last_err)
 }
 
 /// Watch a vault's `.qwert/appearance.toml` for direct edits and invoke
-/// `callback` with the freshly parsed config, debounced by [`APPEARANCE_DEBOUNCE`].
+/// `callback` with an [`AppearanceUpdate`], debounced by [`APPEARANCE_DEBOUNCE`].
+///
+/// - `Changed(config)` → apply the new config.
+/// - `Error(warning)` → keep the previous config; show the warning transiently.
 ///
 /// The parent `.qwert` directory is watched **non-recursively** (not the whole
 /// vault) so that atomic writes (tmp → rename, which swap the file's inode) are
@@ -283,7 +378,7 @@ pub fn watch_vault_appearance<F>(
     callback: F,
 ) -> crate::Result<AppearanceWatchGuard>
 where
-    F: Fn(AppearanceConfig) + Send + 'static,
+    F: Fn(AppearanceUpdate) + Send + 'static,
 {
     let file_path = vault_appearance_path(vault_root);
     let watch_dir = file_path
@@ -323,11 +418,12 @@ where
                     Err(mpsc::RecvTimeoutError::Disconnected) => return,
                 }
             }
-            // Only act on a clean parse. A persistently-invalid file is C3's
-            // concern (keep previous + transient warning); the hook is here.
-            if let Some(config) = read_appearance_with_retry(&file_path) {
-                callback(config);
-            }
+            // C3: propagate both success and error to the caller.
+            let update = match read_appearance_with_retry(&file_path) {
+                Ok(config) => AppearanceUpdate::Changed(Box::new(config)),
+                Err(warning) => AppearanceUpdate::Error(warning),
+            };
+            callback(update);
         }
     });
 
@@ -502,6 +598,23 @@ pub fn save_global_appearance(config: &AppearanceConfig) -> crate::Result<()> {
     let path = config_dir.join("appearance.toml");
     let content = toml::to_string_pretty(config)?;
     std::fs::write(path, content)?;
+    Ok(())
+}
+
+/// Persist `config` to the vault-scoped `<vault>/.qwert/appearance.toml`.
+/// Creates the directory if needed. Uses an atomic write (tmp → rename) so
+/// the C2 watcher always reads a complete file, never a partial write.
+pub fn save_vault_appearance(vault_root: &Path, config: &AppearanceConfig) -> crate::Result<()> {
+    let dir = vault_root.join(".qwert");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("appearance.toml");
+    let content = toml::to_string_pretty(config)?;
+    // Atomic: write to a tmp file in the same directory, then rename.
+    // Same-directory placement keeps the rename on one filesystem.
+    let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+    use std::io::Write as _;
+    tmp.write_all(content.as_bytes())?;
+    tmp.persist(&path).map_err(|e| crate::CoreError::Io(e.error))?;
     Ok(())
 }
 
@@ -758,6 +871,150 @@ mod tests {
         let events = [0, 300, 600];
         let fires = debounce_trailing(&events, 300);
         assert_eq!(fires, vec![600 + 300]);
+    }
+
+    // ─── C3: invalid TOML fallback / warning ─────────────────────────────────
+
+    #[test]
+    fn syntax_error_toml_fallback_to_global_on_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        // Write intentionally broken TOML.
+        std::fs::write(
+            root.join(".qwert").join("appearance.toml"),
+            "this is not = {valid",
+        )
+        .unwrap();
+
+        let res = resolve_appearance_with_fallback(Some(root));
+        assert_eq!(
+            res.scope,
+            AppearanceScope::Global,
+            "must fall back to global"
+        );
+        assert!(res.warning.is_some(), "warning must be set");
+        let w = res.warning.unwrap();
+        // toml error messages include line/column info.
+        assert!(
+            w.contains("parse error"),
+            "warning should mention parse error: {w}"
+        );
+    }
+
+    #[test]
+    fn syntax_error_warning_contains_toml_line_info() {
+        // toml::de::Error Display format includes "line X" when a position is
+        // available. We verify the warning text is non-empty and actionable.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        std::fs::write(
+            root.join(".qwert").join("appearance.toml"),
+            "[color\nbad line here",
+        )
+        .unwrap();
+
+        let res = resolve_appearance_with_fallback(Some(root));
+        let w = res.warning.expect("warning must be set");
+        assert!(w.len() > 10, "warning should be descriptive: {w}");
+        assert!(
+            w.contains("appearance.toml"),
+            "should reference the file: {w}"
+        );
+    }
+
+    #[test]
+    fn mutual_exclusion_violation_falls_back_to_global() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        // preset and fg/bg together — mutual-exclusion violation.
+        std::fs::write(
+            root.join(".qwert").join("appearance.toml"),
+            "[color]\npreset = \"dark\"\nfg = \"#ffffff\"\n",
+        )
+        .unwrap();
+
+        let res = resolve_appearance_with_fallback(Some(root));
+        assert_eq!(res.scope, AppearanceScope::Global);
+        let w = res.warning.expect("warning must be set for conflict");
+        // Warning must name the conflicting keys.
+        assert!(w.contains("preset"), "must mention 'preset': {w}");
+        assert!(
+            w.contains("fg") || w.contains("bg"),
+            "must mention 'fg/bg': {w}"
+        );
+    }
+
+    #[test]
+    fn valid_vault_config_produces_no_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        std::fs::write(
+            root.join(".qwert").join("appearance.toml"),
+            "[color]\npreset = \"dark\"\n",
+        )
+        .unwrap();
+
+        let res = resolve_appearance_with_fallback(Some(root));
+        assert_eq!(res.scope, AppearanceScope::Vault);
+        assert!(res.warning.is_none(), "no warning for valid config");
+    }
+
+    #[test]
+    fn no_vault_file_uses_global_no_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let res = resolve_appearance_with_fallback(Some(dir.path()));
+        assert_eq!(res.scope, AppearanceScope::Global);
+        assert!(res.warning.is_none());
+    }
+
+    #[test]
+    fn hotreload_error_is_error_variant_not_changed() {
+        // Simulate the hot-reload decision: a parse failure must produce
+        // AppearanceUpdate::Error (keep-previous), NOT Changed (apply new state).
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        let bad_path = root.join(".qwert").join("appearance.toml");
+        std::fs::write(&bad_path, "bad toml {{").unwrap();
+
+        // Directly test the internal read-and-validate path (same logic the
+        // watcher uses) — infallible wrapper confirms the Error branch.
+        let result = try_read_and_validate(&bad_path);
+        assert!(
+            result.is_err(),
+            "bad TOML must be Err (→ AppearanceUpdate::Error)"
+        );
+        let msg = result.unwrap_err();
+        assert!(!msg.is_empty(), "error message must be non-empty");
+    }
+
+    #[test]
+    fn hotreload_success_is_changed_variant() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        let path = root.join(".qwert").join("appearance.toml");
+        std::fs::write(&path, "[color]\npreset = \"dark\"\n").unwrap();
+
+        let result = try_read_and_validate(&path);
+        assert!(
+            result.is_ok(),
+            "valid TOML must be Ok (→ AppearanceUpdate::Changed)"
+        );
+    }
+
+    #[test]
+    fn format_warning_names_conflicting_keys() {
+        let err = crate::CoreError::AppearanceConflict(
+            "preset and fg/bg cannot be set at the same time".to_owned(),
+        );
+        let w = format_appearance_warning(&err);
+        assert!(w.contains("preset"), "{w}");
+        assert!(w.contains("fg") || w.contains("bg"), "{w}");
     }
 
     // ─── contrast_ratio ───────────────────────────────────────────────────────

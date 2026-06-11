@@ -44,3 +44,31 @@ describe("appearanceStore.reapplyAppearance (C2 hot reload)", () => {
     expect(el.style.getPropertyValue("--qw-fg")).toBe("#222222");
   });
 });
+
+describe("appearanceStore C3: warning signals", () => {
+  beforeEach(() => {
+    document.documentElement.removeAttribute("style");
+    delete document.documentElement.dataset.theme;
+  });
+
+  it("setAppearanceWarning stores the warning text", () => {
+    appearanceStore.setAppearanceWarning("parse error: line 3, column 7");
+    expect(appearanceStore.currentWarning()).toBe("parse error: line 3, column 7");
+  });
+
+  it("reapplyAppearance clears the warning", () => {
+    appearanceStore.setAppearanceWarning("some warning");
+    appearanceStore.reapplyAppearance({ "--qw-fg": "#000000" });
+    expect(appearanceStore.currentWarning()).toBeNull();
+  });
+
+  it("warning does not alter CSS vars (previous state preserved)", () => {
+    // Apply a known config first.
+    appearanceStore.reapplyAppearance({ "--qw-fg": "#111111" });
+    const before = document.documentElement.style.getPropertyValue("--qw-fg");
+    // A warning arrives (hot-reload error path).
+    appearanceStore.setAppearanceWarning("bad toml");
+    // CSS vars must be unchanged.
+    expect(document.documentElement.style.getPropertyValue("--qw-fg")).toBe(before);
+  });
+});

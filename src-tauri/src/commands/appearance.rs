@@ -1,29 +1,39 @@
 use crate::AppState;
-use qwert_core::appearance::AppearanceWatchGuard;
+use qwert_core::appearance::{AppearanceUpdate, AppearanceWatchGuard};
 use std::collections::HashMap;
 use std::path::Path;
 use tauri::{Emitter, State};
 
+/// C1/C3: CSS 変数マップを返す。vault config が壊れていればグローバルへフォールバックし
+/// `appearance-warning` イベントを emit する（アプリは必ず起動する）。
 #[tauri::command]
-pub fn load_appearance(state: State<'_, AppState>) -> HashMap<String, String> {
-    // スコープ解決（vault があれば vault のみ、なければ global）は core に集約。
-    // vault があればグローバルとはマージしない（二者択一）。
+pub fn load_appearance(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> HashMap<String, String> {
     let vault_root = state.vault_root.lock().unwrap().clone();
-    let (config, _scope) =
-        qwert_core::appearance::resolve_appearance(vault_root.as_deref()).unwrap_or_default();
-    qwert_core::appearance::to_css_vars(&config).unwrap_or_default()
+    let res = qwert_core::appearance::resolve_appearance_with_fallback(vault_root.as_deref());
+    if let Some(warning) = res.warning {
+        let _ = app.emit("appearance-warning", warning);
+    }
+    qwert_core::appearance::to_css_vars(&res.config).unwrap_or_default()
 }
 
-/// C2: vault の `.qwert/appearance.toml` を監視し、直接編集を 300ms debounce 後に
-/// `appearance-changed` イベントで解決済み CSS 変数としてフロントへ emit する。
-/// 返り値の guard を保持している間だけ監視が続く（drop で停止）。
+/// C2/C3: vault の `.qwert/appearance.toml` を監視し、300ms debounce 後に:
+/// - 成功 → `appearance-changed` に CSS 変数を emit。
+/// - エラー → `appearance-warning` に警告文を emit（直前の見た目を維持）。
 pub fn watch_appearance(
     app: tauri::AppHandle,
     vault_root: &Path,
 ) -> Result<AppearanceWatchGuard, String> {
-    qwert_core::appearance::watch_vault_appearance(vault_root, move |config| {
-        let vars = qwert_core::appearance::to_css_vars(&config).unwrap_or_default();
-        let _ = app.emit("appearance-changed", vars);
+    qwert_core::appearance::watch_vault_appearance(vault_root, move |update| match update {
+        AppearanceUpdate::Changed(config) => {
+            let vars = qwert_core::appearance::to_css_vars(&config).unwrap_or_default();
+            let _ = app.emit("appearance-changed", vars);
+        }
+        AppearanceUpdate::Error(warning) => {
+            let _ = app.emit("appearance-warning", warning);
+        }
     })
     .map_err(|e| e.to_string())
 }

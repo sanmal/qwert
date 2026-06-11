@@ -111,8 +111,7 @@ pub fn execute_list(tree: bool, format: OutputFormat, vault_root: &Path) -> i32 
                     OutputFormat::Json => {
                         let nodes: Vec<serde_json::Value> =
                             entries.iter().map(entry_to_json).collect();
-                        let v =
-                            make_envelope("file_tree", serde_json::json!({ "tree": nodes }));
+                        let v = make_envelope("file_tree", serde_json::json!({ "tree": nodes }));
                         println!("{}", to_json_string(&v));
                     }
                     _ => {
@@ -160,8 +159,13 @@ fn collect_paths(entries: &[vault::VaultEntry], out: &mut Vec<String>) {
 fn entry_to_json(e: &vault::VaultEntry) -> serde_json::Value {
     let ty = if e.is_dir { "dir" } else { "file" };
     if e.is_dir {
-        let children: Vec<serde_json::Value> =
-            e.children.as_deref().unwrap_or(&[]).iter().map(entry_to_json).collect();
+        let children: Vec<serde_json::Value> = e
+            .children
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(entry_to_json)
+            .collect();
         serde_json::json!({ "name": e.name, "path": e.path, "type": ty, "children": children })
     } else {
         serde_json::json!({ "name": e.name, "path": e.path, "type": ty })
@@ -192,7 +196,12 @@ mod tests {
     use qwert_core::vault::VaultEntry;
 
     fn file(name: &str, path: &str) -> VaultEntry {
-        VaultEntry { name: name.to_owned(), path: path.to_owned(), is_dir: false, children: None }
+        VaultEntry {
+            name: name.to_owned(),
+            path: path.to_owned(),
+            is_dir: false,
+            children: None,
+        }
     }
 
     fn dir(name: &str, path: &str, ch: Vec<VaultEntry>) -> VaultEntry {
@@ -217,7 +226,9 @@ mod tests {
     fn entry_to_json_dir_has_children_array() {
         let v = entry_to_json(&dir("notes", "notes", vec![file("a.md", "notes/a.md")]));
         assert_eq!(v["type"], "dir");
-        let children = v["children"].as_array().expect("dir must have children array");
+        let children = v["children"]
+            .as_array()
+            .expect("dir must have children array");
         assert_eq!(children.len(), 1);
         assert_eq!(children[0]["name"], "a.md");
         assert_eq!(children[0]["type"], "file");
@@ -238,7 +249,11 @@ mod tests {
 
     #[test]
     fn tree_to_lines_dir_with_child() {
-        let entries = vec![dir("notes", "notes", vec![file("auth.md", "notes/auth.md")])];
+        let entries = vec![dir(
+            "notes",
+            "notes",
+            vec![file("auth.md", "notes/auth.md")],
+        )];
         let lines = tree_to_lines(&entries, 0);
         assert_eq!(lines, vec!["notes/", "  auth.md"]);
     }
