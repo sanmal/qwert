@@ -32,7 +32,8 @@ pub struct PendingRevisionInfo {
 pub struct VaultStatus {
     /// Absolute path of the vault root.
     pub vault: String,
-    /// Syncthing `.sync-conflict-*` files found anywhere in the vault.
+    /// Syncthing `.sync-conflict-*` files found anywhere in the vault,
+    /// including `.qwert/appearance.sync-conflict-*.toml` (C8).
     pub sync_conflicts: Vec<SyncConflict>,
     /// Leftover WAL from a crashed Revision, or `null`.
     pub pending_revision: Option<PendingRevisionInfo>,
@@ -47,7 +48,6 @@ pub fn check_vault_status(vault_root: &Path) -> crate::Result<VaultStatus> {
     let vault_str = vault_root.to_string_lossy().into_owned();
     let mut sync_conflicts: Vec<SyncConflict> = Vec::new();
     let mut pending_revision: Option<PendingRevisionInfo> = None;
-    let mut appearance_conflicts = 0usize;
 
     // ── Scan vault for *.sync-conflict-*.md files ──────────────────────────
     // Walk the entire vault, skipping hidden dirs (except .qwert).
@@ -88,7 +88,10 @@ pub fn check_vault_status(vault_root: &Path) -> crate::Result<VaultStatus> {
             });
         }
 
-        // Check for .qwert/appearance.sync-conflict-*.toml
+        // C8: .qwert/appearance.sync-conflict-*.toml → included in sync_conflicts.
+        // Uses a simple prefix+suffix check rather than the regex so that
+        // filenames without a device-ID suffix (e.g. some Syncthing variants)
+        // are also detected. Base is always .qwert/appearance.toml.
         if file_name.starts_with("appearance.sync-conflict-")
             && file_name.ends_with(".toml")
             && path
@@ -96,7 +99,14 @@ pub fn check_vault_status(vault_root: &Path) -> crate::Result<VaultStatus> {
                 .map(|p| p.ends_with(".qwert"))
                 .unwrap_or(false)
         {
-            appearance_conflicts += 1;
+            let rel = path
+                .strip_prefix(vault_root)
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            sync_conflicts.push(SyncConflict {
+                base: ".qwert/appearance.toml".to_owned(),
+                conflict_file: rel,
+            });
         }
     }
 
@@ -130,13 +140,6 @@ pub fn check_vault_status(vault_root: &Path) -> crate::Result<VaultStatus> {
                 .to_owned(),
         );
     }
-    if appearance_conflicts > 0 {
-        warnings.push(format!(
-            "{appearance_conflicts} appearance.toml conflict(s) in .qwert/. \
-             Resolve manually."
-        ));
-    }
-
     Ok(VaultStatus {
         vault: vault_str,
         sync_conflicts,
@@ -262,15 +265,70 @@ mod tests {
         let root = vault.path().canonicalize().unwrap();
         let qwert_dir = root.join(".qwert");
         fs::create_dir(&qwert_dir).unwrap();
+        let conflict_name = "appearance.sync-conflict-20260422-123456-ABC1234.toml";
+        fs::write(qwert_dir.join(conflict_name), "").unwrap();
+
+        let status = check_vault_status(&root).unwrap();
+        assert!(
+            !status.healthy,
+            "vault with appearance conflict must be unhealthy"
+        );
+        assert_eq!(
+            status.sync_conflicts.len(),
+            1,
+            "appearance conflict must be in sync_conflicts"
+        );
+        assert_eq!(
+            status.sync_conflicts[0].base, ".qwert/appearance.toml",
+            "base must be the canonical appearance.toml path"
+        );
+        assert!(
+            status.sync_conflicts[0]
+                .conflict_file
+                .contains("appearance.sync-conflict"),
+            "conflict_file must reference the conflict file"
+        );
+        assert!(!status.warnings.is_empty(), "warnings must be non-empty");
+    }
+
+    // C8: task specifies filename without device ID — must also be detected.
+    #[test]
+    fn detects_appearance_conflict_without_device_id() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        let qwert_dir = root.join(".qwert");
+        fs::create_dir(&qwert_dir).unwrap();
         fs::write(
-            qwert_dir.join("appearance.sync-conflict-20260422-123456-ABC1234.toml"),
+            qwert_dir.join("appearance.sync-conflict-20260101-120000.toml"),
             "",
         )
         .unwrap();
 
         let status = check_vault_status(&root).unwrap();
         assert!(!status.healthy);
-        assert!(status.warnings.iter().any(|w| w.contains("appearance")));
+        assert_eq!(status.sync_conflicts.len(), 1);
+        assert_eq!(status.sync_conflicts[0].base, ".qwert/appearance.toml");
+    }
+
+    #[test]
+    fn appearance_conflict_does_not_affect_exit_code() {
+        // Exit code is determined by the caller (vault::execute_status).
+        // check_vault_status itself returns Ok even when conflicts exist — the
+        // conflict is carried in sync_conflicts, not escalated to a Result::Err.
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        let qwert_dir = root.join(".qwert");
+        fs::create_dir(&qwert_dir).unwrap();
+        fs::write(
+            qwert_dir.join("appearance.sync-conflict-20260101-120000.toml"),
+            "",
+        )
+        .unwrap();
+
+        assert!(
+            check_vault_status(&root).is_ok(),
+            "check_vault_status must return Ok regardless of appearance conflicts"
+        );
     }
 
     #[test]
