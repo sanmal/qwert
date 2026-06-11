@@ -1437,4 +1437,161 @@ mod tests {
             "existing file must not be overwritten"
         );
     }
+
+    // ─── C7: trust boundary — vault TOML injection → CSS vars sanitized ───────
+    //
+    // These tests verify the sanitize pipeline: vault TOML → load_vault_appearance
+    // → to_css_vars. The same pipeline is traversed by all three write paths:
+    //   (1) `appearance set --scope vault` → hot-reload → to_css_vars
+    //   (2) raw `write_file` to .qwert/appearance.toml → hot-reload → to_css_vars
+    //   (3) AI direct edit → hot-reload → to_css_vars
+    // Worst-case outcome is an ugly theme, never code execution or resource loading.
+
+    fn write_vault_toml(root: &std::path::Path, content: &str) {
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        std::fs::write(root.join(".qwert").join("appearance.toml"), content).unwrap();
+    }
+
+    fn css_vars_from_vault(root: &std::path::Path) -> std::collections::HashMap<String, String> {
+        let config = load_vault_appearance(root).unwrap().unwrap_or_default();
+        to_css_vars(&config).unwrap_or_default()
+    }
+
+    #[test]
+    fn url_injection_in_vault_toml_does_not_reach_css_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_vault_toml(
+            root,
+            "[color]\nfg = \"url(http://evil.com/x)\"\nbg = \"#ffffff\"\n",
+        );
+
+        let vars = css_vars_from_vault(root);
+        assert!(
+            !vars.contains_key("--qw-fg"),
+            "url() injection must not produce a CSS var"
+        );
+        for v in vars.values() {
+            assert!(
+                !v.contains("url("),
+                "url() must not appear in any CSS var value: {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn javascript_injection_in_vault_toml_does_not_reach_css_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_vault_toml(
+            root,
+            "[color]\nfg = \"javascript:alert(1)\"\nbg = \"#ffffff\"\n",
+        );
+
+        let vars = css_vars_from_vault(root);
+        assert!(
+            !vars.contains_key("--qw-fg"),
+            "javascript: injection must not produce a CSS var"
+        );
+        for v in vars.values() {
+            assert!(
+                !v.contains("javascript:"),
+                "javascript: must not appear in any CSS var value: {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn expression_injection_in_vault_toml_does_not_reach_css_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_vault_toml(
+            root,
+            "[color]\nfg = \"expression(alert(1))\"\nbg = \"#ffffff\"\n",
+        );
+
+        let vars = css_vars_from_vault(root);
+        assert!(
+            !vars.contains_key("--qw-fg"),
+            "expression() injection must not produce a CSS var"
+        );
+        for v in vars.values() {
+            assert!(
+                !v.contains("expression("),
+                "expression() must not appear in any CSS var value: {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn script_tag_injection_in_font_family_does_not_reach_css_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // '<' is in DANGEROUS_PATTERNS — any HTML/script tag is blocked.
+        write_vault_toml(
+            root,
+            "[text]\nfont_family = \"<script>alert(1)</script>\"\n",
+        );
+
+        let vars = css_vars_from_vault(root);
+        assert!(
+            !vars.contains_key("--qw-font-family"),
+            "<script> injection must not produce a CSS var"
+        );
+        for v in vars.values() {
+            assert!(
+                !v.contains('<'),
+                "HTML tag chars must not appear in any CSS var value: {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn advanced_color_url_injection_does_not_reach_css_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_vault_toml(
+            root,
+            "[color.advanced]\ncm-keyword = \"url(http://evil.com/steal-csp)\"\n",
+        );
+
+        let vars = css_vars_from_vault(root);
+        assert!(
+            !vars.contains_key("--qw-cm-keyword"),
+            "url() in advanced color must not produce a CSS var"
+        );
+        for v in vars.values() {
+            assert!(
+                !v.contains("url("),
+                "url() must not appear in any CSS var: {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_vault_toml_values_all_pass_through_sanitizer() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_vault_toml(
+            root,
+            "[color]\nfg = \"#1a1a1a\"\nbg = \"#ffffff\"\n\n[text]\nfont_size = 18\n",
+        );
+
+        let vars = css_vars_from_vault(root);
+        assert_eq!(
+            vars.get("--qw-fg").map(|s| s.as_str()),
+            Some("#1a1a1a"),
+            "valid fg must reach CSS vars"
+        );
+        assert_eq!(
+            vars.get("--qw-bg").map(|s| s.as_str()),
+            Some("#ffffff"),
+            "valid bg must reach CSS vars"
+        );
+        assert_eq!(
+            vars.get("--qw-font-size").map(|s| s.as_str()),
+            Some("18px"),
+            "valid font_size must reach CSS vars"
+        );
+    }
 }

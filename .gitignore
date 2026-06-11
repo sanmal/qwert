@@ -1,9 +1,53 @@
-node_modules
-dist
-/target
-**/target
-node_modules
-dist
+# ---- Dependencies ----
+node_modules/
+
+# ---- Build outputs ----
+dist/
+dist-ssr/
+target/
+
+# ---- Vite / frontend local overrides ----
+*.local
+
+# ---- Test coverage (vitest) ----
+/coverage/
+
+# ---- Logs ----
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---- Environment ----
+.env
+.env.*
+!.env.example
+
+# ---- Editor / IDE ----
+.idea/
+*.swp
+*.swo
+*~
+# Keep only the shared VSCode recommendations, ignore any local settings.
+# （.vscode を完全に消すなら下2行を消し、extensions.json を untrack する）
+.vscode/*
+!.vscode/extensions.json
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- mise (commit mise.toml; ignore local overrides only) ----
+mise.local.toml
+.mise.local.toml
+
+# ---- Tauri generated (Android etc., Phase 4) ----
+/src-tauri/gen/
+
+# ---- qwert vault runtime (in case a vault lives under the repo) ----
 .qwert/cache/
 .qwert/pending-revision.json
+
+# ---- Local task notes (kept out of the public repo) ----
 /docs/tasks*

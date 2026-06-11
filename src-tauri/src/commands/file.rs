@@ -43,6 +43,13 @@ pub fn read_file(path: String, state: State<'_, AppState>) -> Result<String, Str
 #[tauri::command]
 pub fn write_file(path: String, content: String, state: State<'_, AppState>) -> Result<(), String> {
     // B2: 書き込み前に記録し、watcher の自己トリガを抑制する（配線は t09）。
+    //
+    // C7 trust-boundary audit: if `path` is `.qwert/appearance.toml`, this raw
+    // write is intentionally allowed — the C2 hot-reload watcher fires on the
+    // saved file, calls `to_css_vars` (the Rust sanitizer), and emits only the
+    // sanitized CSS-var map to the frontend. No raw TOML value ever reaches the
+    // frontend directly. The worst-case outcome of a malicious write is an ugly
+    // theme, not code execution or external resource loading.
     state
         .recent_writes
         .lock()
