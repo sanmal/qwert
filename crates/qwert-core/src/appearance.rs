@@ -724,6 +724,87 @@ editor_max_width = 72
 enabled = true
 "##;
 
+/// Template for `<vault>/.qwert/appearance.toml` (vault scope, AI protocol included).
+///
+/// All configuration lines are commented out so parsing the file yields the
+/// built-in defaults. The AI protocol section guides language models through
+/// WCAG-compliant appearance customisation without requiring human instructions.
+pub const VAULT_APPEARANCE_TEMPLATE: &str = r##"# qwert appearance configuration (vault scope)
+#
+# This file overrides ~/.config/qwert/appearance.toml
+# for this vault only. Changes here are reflected
+# immediately (no restart needed).
+#
+# Use EITHER [color] preset OR fg+bg, not both
+# (they are mutually exclusive).
+#
+# ===== For AI assistants =====
+# When the user asks to customize the appearance,
+# follow this protocol:
+#
+# 1. Understand the user's intent (e.g. "warm tone",
+#    "easy on the eyes at night", "high contrast").
+# 2. Propose `fg` and `bg` as a hex pair satisfying
+#    WCAG 2.2 contrast:
+#    - AA  (required):  ratio >= 4.5:1 for normal text
+#    - AAA (preferred): ratio >= 7:1
+# 3. Compute the ratio using WCAG relative luminance.
+#    Never propose one of fg/bg without the other
+#    (WCAG 1.4.8 Failure F24).
+# 4. Add a comment above the values stating the
+#    achieved ratio and WCAG level, e.g.:
+#      # contrast 7.3:1 (AAA), warm tone
+#      fg = "#3a2418"
+#      bg = "#fdf6e3"
+# 5. To verify locally, the user can run:
+#      qwert appearance contrast --fg <hex> --bg <hex>
+#
+# Answer me in English.  # <- edit to your preferred language (e.g. "Japanese", "日本語", "Français")
+#
+# ===== Configuration =====
+#
+# [text]
+# font_size = 16
+# font_family = "system-ui, sans-serif"
+# line_height = 1.6
+# letter_spacing = 0.0
+# word_spacing = 0.0
+# editor_max_width = 72
+#
+# [color]
+# preset = "default"          # "default" | "high-contrast" | "dark" | "dark-high-contrast"
+# fg = "#1a1a1a"              # custom foreground (bg must also be set; F24)
+# bg = "#ffffff"              # custom background (fg must also be set; F24)
+#
+# [highlight]
+# enabled = true
+#
+# [color.advanced]
+# cm-keyword = "#7c3aed"
+# cm-string = "#059669"
+# cm-comment = "#9ca3af"
+# cm-heading = "#1e40af"
+# cm-link = "#2563eb"
+# cursor = "#1a1a1a"
+# selection-bg = "#dbeafe"
+"##;
+
+/// Write the vault appearance template to `<vault>/.qwert/appearance.toml`
+/// if the file does not already exist. Creates the `.qwert` directory if needed.
+/// Returns `true` when the file was created, `false` when it already existed.
+pub fn init_vault_appearance(vault_root: &Path) -> crate::Result<bool> {
+    let path = vault_appearance_path(vault_root);
+    if path.exists() {
+        return Ok(false);
+    }
+    let dir = path
+        .parent()
+        .expect("vault appearance path always has a parent");
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(&path, VAULT_APPEARANCE_TEMPLATE)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1273,5 +1354,87 @@ mod tests {
         let s = compute_appearance_status(Some(dir.path()));
         assert_eq!(s.schema_version, "v1");
         assert_eq!(s.kind, "appearance_status");
+    }
+
+    // ─── C6: vault template / init_vault_appearance ───────────────────────────
+
+    #[test]
+    fn vault_template_parses_as_default_config() {
+        // All lines are commented out → parses to built-in defaults.
+        let config: AppearanceConfig = toml::from_str(VAULT_APPEARANCE_TEMPLATE).unwrap();
+        let defaults = AppearanceConfig::default();
+        assert_eq!(config.text.font_size, defaults.text.font_size);
+        assert_eq!(config.text.font_family, defaults.text.font_family);
+        assert_eq!(config.color.preset, defaults.color.preset);
+        assert_eq!(config.color.fg, defaults.color.fg);
+        assert_eq!(config.color.bg, defaults.color.bg);
+        assert_eq!(config.highlight.enabled, defaults.highlight.enabled);
+    }
+
+    #[test]
+    fn vault_template_contains_ai_protocol() {
+        assert!(
+            VAULT_APPEARANCE_TEMPLATE.contains("For AI assistants"),
+            "template must include AI protocol section header"
+        );
+        assert!(
+            VAULT_APPEARANCE_TEMPLATE.contains("WCAG"),
+            "template must mention WCAG"
+        );
+        assert!(
+            VAULT_APPEARANCE_TEMPLATE.contains("F24"),
+            "template must mention F24 (fg/bg pair requirement)"
+        );
+        assert!(
+            VAULT_APPEARANCE_TEMPLATE.contains("appearance contrast"),
+            "template must reference the contrast command"
+        );
+    }
+
+    #[test]
+    fn vault_template_contains_language_switch_line() {
+        assert!(
+            VAULT_APPEARANCE_TEMPLATE.contains("Answer me in English"),
+            "template must include the language switch comment line"
+        );
+        assert!(
+            VAULT_APPEARANCE_TEMPLATE.contains("preferred language"),
+            "template must hint at editing the language"
+        );
+    }
+
+    #[test]
+    fn init_vault_appearance_creates_file_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let created = init_vault_appearance(root).unwrap();
+        assert!(created, "must return true when file is newly created");
+        let path = vault_appearance_path(root);
+        assert!(
+            path.exists(),
+            ".qwert/appearance.toml must exist after init"
+        );
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("For AI assistants"),
+            "written file must be the vault template"
+        );
+    }
+
+    #[test]
+    fn init_vault_appearance_returns_false_when_already_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        std::fs::write(root.join(".qwert").join("appearance.toml"), "[color]\n").unwrap();
+
+        let created = init_vault_appearance(root).unwrap();
+        assert!(!created, "must return false when file already exists");
+        // Content must be unchanged.
+        let content = std::fs::read_to_string(root.join(".qwert").join("appearance.toml")).unwrap();
+        assert_eq!(
+            content, "[color]\n",
+            "existing file must not be overwritten"
+        );
     }
 }
