@@ -229,6 +229,63 @@ pub fn create_file(vault_root: &Path, relative_path: &str) -> crate::Result<()> 
     Ok(())
 }
 
+// ── Editing state (Level 3 hint) ─────────────────────────────────────────────
+
+/// Vault-relative path of the editing state file.
+const EDITING_STATE_PATH: &str = ".qwert/editing_state.json";
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct EditingStateFile {
+    schema_version: String,
+    kind: String,
+    #[serde(default)]
+    editing: Vec<String>,
+}
+
+/// Returns the set of vault-relative paths currently open and unsaved in the GUI.
+pub fn read_editing_paths(vault_root: &Path) -> Vec<String> {
+    let path = vault_root.join(EDITING_STATE_PATH);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    serde_json::from_str::<EditingStateFile>(&content)
+        .map(|s| s.editing)
+        .unwrap_or_default()
+}
+
+/// Returns true when `rel_path` is currently open and unsaved in the GUI.
+pub fn is_editing(vault_root: &Path, rel_path: &str) -> bool {
+    read_editing_paths(vault_root)
+        .iter()
+        .any(|p| p == rel_path)
+}
+
+/// Set or clear the editing state for `rel_path`.
+/// Silently ignores write failures (hint only, not critical state).
+pub fn set_editing_path(vault_root: &Path, rel_path: &str, editing: bool) {
+    let mut paths = read_editing_paths(vault_root);
+    if editing {
+        if !paths.iter().any(|p| p == rel_path) {
+            paths.push(rel_path.to_owned());
+        }
+    } else {
+        paths.retain(|p| p != rel_path);
+    }
+    let dir = vault_root.join(".qwert");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let state = EditingStateFile {
+        schema_version: "v1".to_owned(),
+        kind: "editing_state".to_owned(),
+        editing: paths,
+    };
+    if let Ok(json) = serde_json::to_string(&state) {
+        let _ = std::fs::write(dir.join("editing_state.json"), json);
+    }
+}
+
 /// vault_root 配下を再帰監視し、変更のあった .md ファイルの
 /// vault 相対パス（`/` 区切り）ごとに callback を呼ぶ。
 /// callback はバックグラウンドスレッドから呼ばれる（Send + 'static 必須）。

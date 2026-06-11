@@ -99,6 +99,15 @@ export default function App() {
     if (file) editorStore.loadFile(file);
   });
 
+  // Level 3: 保存状態変化をバックエンドに通知（MCP 編集中ヒント用）
+  createEffect(() => {
+    const file = vaultStore.selectedFile();
+    const state = editorStore.saveState();
+    if (file) {
+      void tauri.setEditingState(file, state !== SAVE_STATE.SAVED);
+    }
+  });
+
   return (
     <div class="app-layout">
       <VaultStatusBanner />

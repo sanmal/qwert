@@ -67,3 +67,13 @@ pub fn create_file(path: String, state: State<'_, AppState>) -> Result<(), Strin
     let root = root.as_ref().ok_or("No vault open")?;
     vault::create_file(root, &path).map_err(|e| e.to_string())
 }
+
+/// Level 3 editing hint: record or clear the unsaved state for `path`.
+/// Called by the frontend whenever saveState transitions between UNSAVED and SAVED.
+#[tauri::command]
+pub fn set_editing_state(path: String, is_editing: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let root = state.vault_root.lock().unwrap();
+    let root = root.as_ref().ok_or("No vault open")?;
+    vault::set_editing_path(root, &path, is_editing);
+    Ok(())
+}

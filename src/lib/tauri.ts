@@ -24,6 +24,11 @@ export async function createFile(path: RelativePath): Promise<void> {
   return invoke<void>("create_file", { path });
 }
 
+/** Level 3 editing hint: notify the backend that `path` is unsaved (isEditing=true) or saved (false). */
+export async function setEditingState(path: RelativePath, isEditing: boolean): Promise<void> {
+  return invoke<void>("set_editing_state", { path, isEditing });
+}
+
 export async function getVaultRoot(): Promise<AbsolutePath | null> {
   const result = await invoke<string | null>("get_vault_root");
   return result as AbsolutePath | null;

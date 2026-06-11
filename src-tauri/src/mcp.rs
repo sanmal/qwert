@@ -72,6 +72,25 @@ fn default_true() -> bool {
     true
 }
 
+// ── Warning helpers ───────────────────────────────────────────────────────────
+
+/// Build the `invisible_char_warnings` array from file content.
+/// Each entry: `{ line, column, category, char }` where `char` is the Unicode code point (u32).
+/// Empty array when no invisible characters are found.
+fn invisible_warnings(content: &str) -> Vec<serde_json::Value> {
+    qwert_core::sanitize::detect_invisible_chars(content)
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "line": f.line,
+                "column": f.column,
+                "category": f.category_str(),
+                "char": f.char_value as u32,
+            })
+        })
+        .collect()
+}
+
 // ── Error helper ──────────────────────────────────────────────────────────────
 
 fn core_error_json(e: &qwert_core::CoreError) -> String {
@@ -150,19 +169,36 @@ impl QwertMcpServer {
 
     // ── file ──────────────────────────────────────────────────────────────────
 
-    #[tool(description = "Read a file from the vault. Returns content and mtime (Unix seconds).")]
+    #[tool(description = "Read a file from the vault. Returns content, mtime (Unix seconds), invisible_char_warnings, and editing (true when the file is open and unsaved in the GUI).")]
     fn file_read(&self, Parameters(p): Parameters<FileReadParams>) -> String {
         match qwert_core::vault::read_file_with_mtime(&self.vault_root, &p.path) {
-            Ok((content, mtime)) => to_json_string(&make_envelope(
-                "file_content",
-                serde_json::json!({ "path": p.path, "content": content, "mtime": mtime }),
-            )),
+            Ok((content, mtime)) => {
+                let warnings = invisible_warnings(&content);
+                let editing = qwert_core::vault::is_editing(&self.vault_root, &p.path);
+                to_json_string(&make_envelope(
+                    "file_content",
+                    serde_json::json!({
+                        "path": p.path,
+                        "content": content,
+                        "mtime": mtime,
+                        "invisible_char_warnings": warnings,
+                        "editing": editing,
+                    }),
+                ))
+            }
             Err(ref e) => core_error_json(e),
         }
     }
 
-    #[tool(description = "Write content to a file in the vault (atomic). Provide if_match (mtime from file_read) for safe concurrent writes.")]
+    #[tool(description = "Write content to a file in the vault (atomic). Provide if_match (mtime from file_read) for safe concurrent writes. Check the editing field in the response — if true, the GUI had unsaved changes and will show an external-change dialog.")]
     fn file_write(&self, Parameters(p): Parameters<FileWriteParams>) -> String {
+        let editing = qwert_core::vault::is_editing(&self.vault_root, &p.path);
+        let editing_note: Option<&str> = if editing {
+            Some("This file was open and unsaved in the GUI. The GUI editor will show an external-change dialog. Consider reading the file first to avoid overwriting unsaved work.")
+        } else {
+            None
+        };
+
         if let Some(expected) = p.if_match {
             return match qwert_core::vault::write_file_safe(
                 &self.vault_root,
@@ -171,10 +207,11 @@ impl QwertMcpServer {
                 expected,
             ) {
                 Ok(qwert_core::vault::WriteResult::Success { new_mtime }) => {
-                    to_json_string(&make_envelope(
-                        "file_written",
-                        serde_json::json!({ "path": p.path, "mtime": new_mtime }),
-                    ))
+                    let mut payload = serde_json::json!({ "path": p.path, "mtime": new_mtime, "editing": editing });
+                    if let Some(note) = editing_note {
+                        payload["editing_note"] = serde_json::Value::String(note.to_owned());
+                    }
+                    to_json_string(&make_envelope("file_written", payload))
                 }
                 Ok(qwert_core::vault::WriteResult::Conflict { current_mtime }) => {
                     to_json_string(&make_envelope(
@@ -197,10 +234,13 @@ impl QwertMcpServer {
             };
         }
         match qwert_core::vault::write_file(&self.vault_root, &p.path, &p.content) {
-            Ok(()) => to_json_string(&make_envelope(
-                "file_written",
-                serde_json::json!({ "path": p.path }),
-            )),
+            Ok(()) => {
+                let mut payload = serde_json::json!({ "path": p.path, "editing": editing });
+                if let Some(note) = editing_note {
+                    payload["editing_note"] = serde_json::Value::String(note.to_owned());
+                }
+                to_json_string(&make_envelope("file_written", payload))
+            }
             Err(ref e) => core_error_json(e),
         }
     }
@@ -277,7 +317,7 @@ impl QwertMcpServer {
         }
     }
 
-    #[tool(description = "Rename a note and update all wikilink references. dry_run=true (default) returns the plan. Set dry_run=false to apply.")]
+    #[tool(description = "Rename a note and update all wikilink references. dry_run=true (default) returns the plan. Set dry_run=false to apply. When applying, check the editing field — if true, the note was open and unsaved in the GUI.")]
     fn note_revision(&self, Parameters(p): Parameters<NoteRevisionParams>) -> String {
         use qwert_core::revision::{NamingStyle, RevisionRequest};
 
@@ -319,6 +359,7 @@ impl QwertMcpServer {
                 Err(ref e) => core_error_json(e),
             }
         } else {
+            let editing = qwert_core::vault::is_editing(&self.vault_root, &p.path);
             match qwert_core::revision::execute_revision(&req) {
                 Ok(result) => {
                     let affected: Vec<serde_json::Value> = result
@@ -331,15 +372,19 @@ impl QwertMcpServer {
                             })
                         })
                         .collect();
-                    to_json_string(&make_envelope(
-                        "revision_result",
-                        serde_json::json!({
-                            "old_path": result.old_path,
-                            "new_path": result.new_path,
-                            "affected_files": affected,
-                            "total_wikilinks": result.total_wikilinks,
-                        }),
-                    ))
+                    let mut payload = serde_json::json!({
+                        "old_path": result.old_path,
+                        "new_path": result.new_path,
+                        "affected_files": affected,
+                        "total_wikilinks": result.total_wikilinks,
+                        "editing": editing,
+                    });
+                    if editing {
+                        payload["editing_note"] = serde_json::Value::String(
+                            "This note was open and unsaved in the GUI. The GUI editor will show an external-change dialog.".to_owned(),
+                        );
+                    }
+                    to_json_string(&make_envelope("revision_result", payload))
                 }
                 Err(ref e) => core_error_json(e),
             }
@@ -455,6 +500,170 @@ impl QwertMcpServer {
 
 #[tool_handler]
 impl ServerHandler for QwertMcpServer {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn make_vault(files: &[(&str, &str)]) -> (TempDir, QwertMcpServer) {
+        let tmp = TempDir::new().unwrap();
+        for (name, content) in files {
+            fs::write(tmp.path().join(name), content).unwrap();
+        }
+        let server = QwertMcpServer::new(tmp.path().to_path_buf());
+        (tmp, server)
+    }
+
+    fn read_json(server: &QwertMcpServer, path: &str) -> serde_json::Value {
+        let out = server.file_read(Parameters(FileReadParams { path: path.to_string() }));
+        serde_json::from_str(&out).expect("file_read must return valid JSON")
+    }
+
+    // ── invisible_char_warnings は detect_invisible_chars と一致 ────────────
+
+    #[test]
+    fn warnings_match_detect_invisible_chars_for_unicode_tag() {
+        let content = "normal \u{E0001} text";
+        let (_tmp, server) = make_vault(&[("test.md", content)]);
+        let v = read_json(&server, "test.md");
+
+        let expected = qwert_core::sanitize::detect_invisible_chars(content);
+        let warnings = v["invisible_char_warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), expected.len());
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0]["line"], expected[0].line);
+        assert_eq!(warnings[0]["column"], expected[0].column);
+        assert_eq!(warnings[0]["category"], expected[0].category_str());
+        assert_eq!(warnings[0]["char"], expected[0].char_value as u32);
+    }
+
+    #[test]
+    fn warnings_match_detect_invisible_chars_for_null_byte() {
+        let content = "before\x00after";
+        let (_tmp, server) = make_vault(&[("test.md", content)]);
+        let v = read_json(&server, "test.md");
+
+        let expected = qwert_core::sanitize::detect_invisible_chars(content);
+        let warnings = v["invisible_char_warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), expected.len());
+        assert_eq!(warnings[0]["category"], "NullByte");
+        assert_eq!(warnings[0]["char"], 0u32);
+    }
+
+    #[test]
+    fn warnings_match_detect_invisible_chars_for_c0_control() {
+        let content = "text\x08more";
+        let (_tmp, server) = make_vault(&[("test.md", content)]);
+        let v = read_json(&server, "test.md");
+
+        let expected = qwert_core::sanitize::detect_invisible_chars(content);
+        let warnings = v["invisible_char_warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), expected.len());
+        assert_eq!(warnings[0]["category"], "C0Control");
+        assert_eq!(warnings[0]["char"], 0x08u32);
+    }
+
+    #[test]
+    fn warnings_match_detect_invisible_chars_for_c1_control() {
+        let content = "\u{0080}data";
+        let (_tmp, server) = make_vault(&[("test.md", content)]);
+        let v = read_json(&server, "test.md");
+
+        let expected = qwert_core::sanitize::detect_invisible_chars(content);
+        let warnings = v["invisible_char_warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), expected.len());
+        assert_eq!(warnings[0]["category"], "C1Control");
+        assert_eq!(warnings[0]["char"], 0x0080u32);
+    }
+
+    // ── Tab / LF / CR は検出されない ─────────────────────────────────────────
+
+    #[test]
+    fn tab_produces_no_warnings() {
+        let content = "column1\tcolumn2";
+        let (_tmp, server) = make_vault(&[("test.md", content)]);
+        let v = read_json(&server, "test.md");
+        assert_eq!(v["invisible_char_warnings"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn lf_produces_no_warnings() {
+        let content = "line1\nline2";
+        let (_tmp, server) = make_vault(&[("test.md", content)]);
+        let v = read_json(&server, "test.md");
+        assert_eq!(v["invisible_char_warnings"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn cr_produces_no_warnings() {
+        let content = "line1\r\nline2";
+        let (_tmp, server) = make_vault(&[("test.md", content)]);
+        let v = read_json(&server, "test.md");
+        assert_eq!(v["invisible_char_warnings"].as_array().unwrap().len(), 0);
+    }
+
+    // ── clean ファイルは空配列を返す ──────────────────────────────────────────
+
+    #[test]
+    fn clean_file_returns_empty_warnings_array() {
+        let content = "# Normal Markdown\n\nHello, world!\n";
+        let (_tmp, server) = make_vault(&[("clean.md", content)]);
+        let v = read_json(&server, "clean.md");
+        let warnings = v["invisible_char_warnings"].as_array().unwrap();
+        assert!(warnings.is_empty());
+    }
+
+    // ── A2 の他フィールドが壊れていないことを確認 ────────────────────────────
+
+    #[test]
+    fn other_fields_intact_alongside_warnings() {
+        let content = "# Hello\n\nSome \u{E0001} content\n";
+        let (_tmp, server) = make_vault(&[("note.md", content)]);
+        let v = read_json(&server, "note.md");
+
+        assert_eq!(v["schema_version"], "v1");
+        assert_eq!(v["kind"], "file_content");
+        assert_eq!(v["path"], "note.md");
+        assert_eq!(v["content"], content);
+        assert!(v["mtime"].is_number());
+        assert!(v.get("data").is_none(), "data wrapper must not exist");
+        let warnings = v["invisible_char_warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0]["category"], "UnicodeTag");
+    }
+
+    // ── 複数 findings ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn multiple_warnings_all_reported() {
+        let content = "\x01hello\x02world\u{E0001}";
+        let (_tmp, server) = make_vault(&[("test.md", content)]);
+        let v = read_json(&server, "test.md");
+
+        let expected = qwert_core::sanitize::detect_invisible_chars(content);
+        let warnings = v["invisible_char_warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), expected.len());
+        assert_eq!(warnings.len(), 3);
+    }
+
+    // ── line / column が正確 ──────────────────────────────────────────────────
+
+    #[test]
+    fn line_and_column_match_detect_result() {
+        let content = "clean\nnote\x08body";
+        let (_tmp, server) = make_vault(&[("test.md", content)]);
+        let v = read_json(&server, "test.md");
+
+        let expected = qwert_core::sanitize::detect_invisible_chars(content);
+        let warnings = v["invisible_char_warnings"].as_array().unwrap();
+        assert_eq!(warnings[0]["line"], expected[0].line);
+        assert_eq!(warnings[0]["column"], expected[0].column);
+        assert_eq!(warnings[0]["line"], 2u64);
+        assert_eq!(warnings[0]["column"], 5u64);
+    }
+}
 
 pub async fn run_server(vault_root: PathBuf) -> i32 {
     let server = QwertMcpServer::new(vault_root);
