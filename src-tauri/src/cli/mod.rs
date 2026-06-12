@@ -1,4 +1,5 @@
 pub mod appearance;
+pub mod describe;
 pub mod exit_code;
 pub mod file;
 pub mod format;
@@ -77,8 +78,14 @@ pub enum Command {
     /// MCP server mode (stdio JSON-RPC)
     Mcp,
 
-    /// Describe a subcommand schema (Phase 3; shows --help for now)
-    Describe { subcommand: Option<String> },
+    /// Print JSON schema for a subcommand's arguments
+    Describe {
+        /// Subcommand to describe, e.g. "file read" or "note" (omit for all)
+        subcommand: Option<String>,
+        /// Output format: json (default) | text
+        #[arg(long, default_value = "json")]
+        format: OutputFormat,
+    },
 
     /// Generate man page
     #[command(hide = true)]
@@ -456,9 +463,8 @@ fn dispatch(command: Command, vault_root: &Path) -> i32 {
             rt.block_on(crate::mcp::run_server(vault_root.to_path_buf()))
         }
 
-        Command::Describe { .. } => {
-            Cli::command().print_help().ok();
-            ExitCode::Success.as_i32()
+        Command::Describe { subcommand, format } => {
+            describe::execute_describe(subcommand.as_deref(), format)
         }
     }
 }
