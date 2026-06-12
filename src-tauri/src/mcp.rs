@@ -169,7 +169,7 @@ impl QwertMcpServer {
 
     // ── file ──────────────────────────────────────────────────────────────────
 
-    #[tool(description = "Read a file from the vault. Returns content, mtime (Unix seconds), invisible_char_warnings, and editing (true when the file is open and unsaved in the GUI).")]
+    #[tool]
     fn file_read(&self, Parameters(p): Parameters<FileReadParams>) -> String {
         match qwert_core::vault::read_file_with_mtime(&self.vault_root, &p.path) {
             Ok((content, mtime)) => {
@@ -190,7 +190,7 @@ impl QwertMcpServer {
         }
     }
 
-    #[tool(description = "Write content to a file in the vault (atomic). Provide if_match (mtime from file_read) for safe concurrent writes. Check the editing field in the response — if true, the GUI had unsaved changes and will show an external-change dialog.")]
+    #[tool]
     fn file_write(&self, Parameters(p): Parameters<FileWriteParams>) -> String {
         let editing = qwert_core::vault::is_editing(&self.vault_root, &p.path);
         let editing_note: Option<&str> = if editing {
@@ -245,7 +245,7 @@ impl QwertMcpServer {
         }
     }
 
-    #[tool(description = "List .md files in the vault. Set tree=true for a directory tree.")]
+    #[tool]
     fn file_list(&self, Parameters(p): Parameters<FileListParams>) -> String {
         match qwert_core::vault::scan_vault(&self.vault_root) {
             Ok(entries) => {
@@ -271,7 +271,7 @@ impl QwertMcpServer {
 
     // ── note ──────────────────────────────────────────────────────────────────
 
-    #[tool(description = "Render a Markdown note to HTML.")]
+    #[tool]
     fn note_render(&self, Parameters(p): Parameters<NotePathParams>) -> String {
         match qwert_core::vault::read_file(&self.vault_root, &p.path) {
             Ok(content) => {
@@ -285,7 +285,7 @@ impl QwertMcpServer {
         }
     }
 
-    #[tool(description = "Show all notes that link to the given note (backlinks).")]
+    #[tool]
     fn note_backlinks(&self, Parameters(p): Parameters<NotePathParams>) -> String {
         let stem = std::path::PathBuf::from(&p.path)
             .file_stem()
@@ -317,7 +317,7 @@ impl QwertMcpServer {
         }
     }
 
-    #[tool(description = "Rename a note and update all wikilink references. dry_run=true (default) returns the plan. Set dry_run=false to apply. When applying, check the editing field — if true, the note was open and unsaved in the GUI.")]
+    #[tool]
     fn note_revision(&self, Parameters(p): Parameters<NoteRevisionParams>) -> String {
         use qwert_core::revision::{NamingStyle, RevisionRequest};
 
@@ -391,7 +391,7 @@ impl QwertMcpServer {
         }
     }
 
-    #[tool(description = "Scan a note for invisible characters (Unicode control chars, null bytes, etc.).")]
+    #[tool]
     fn note_scan(&self, Parameters(p): Parameters<NotePathParams>) -> String {
         match qwert_core::vault::read_file(&self.vault_root, &p.path) {
             Ok(content) => {
@@ -420,7 +420,7 @@ impl QwertMcpServer {
 
     // ── vault ─────────────────────────────────────────────────────────────────
 
-    #[tool(description = "Full-text search across all notes in the vault.")]
+    #[tool]
     fn vault_search(&self, Parameters(p): Parameters<VaultSearchParams>) -> String {
         match qwert_core::search::search_vault(&self.vault_root, &p.query, p.regex) {
             Ok(hits) => {
@@ -448,7 +448,7 @@ impl QwertMcpServer {
         }
     }
 
-    #[tool(description = "Report vault health: sync conflicts, appearance conflicts, etc.")]
+    #[tool]
     fn vault_status(&self, _: Parameters<NoParams>) -> String {
         match qwert_core::status::check_vault_status(&self.vault_root) {
             Ok(s) => {
@@ -459,7 +459,7 @@ impl QwertMcpServer {
         }
     }
 
-    #[tool(description = "Scan all notes in the vault for invisible characters.")]
+    #[tool]
     fn vault_scan(&self, _: Parameters<NoParams>) -> String {
         match qwert_core::vault::scan_vault(&self.vault_root) {
             Ok(tree) => {
@@ -499,7 +499,35 @@ impl QwertMcpServer {
 }
 
 #[tool_handler]
-impl ServerHandler for QwertMcpServer {}
+impl ServerHandler for QwertMcpServer {
+    /// Derive tool descriptions from the CLI schema (describe.rs) at runtime.
+    /// This makes describe.rs the single source of truth for both CLI and MCP.
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        let mut tools = Self::tool_router().list_all();
+        for tool in &mut tools {
+            if let Some(cli_name) =
+                crate::cli::describe::cli_cmd_for_mcp_tool(tool.name.as_ref())
+            {
+                if let Ok(schemas) = crate::cli::describe::build_schemas(Some(cli_name)) {
+                    if let Some(desc) =
+                        schemas.first().and_then(|s| s.description.as_deref())
+                    {
+                        tool.description = Some(std::borrow::Cow::Owned(desc.to_owned()));
+                    }
+                }
+            }
+        }
+        Ok(rmcp::model::ListToolsResult {
+            tools,
+            meta: None,
+            next_cursor: None,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {

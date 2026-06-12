@@ -224,6 +224,27 @@ pub fn execute_describe(subcommand: Option<&str>, format: OutputFormat) -> i32 {
     ExitCode::Success.as_i32()
 }
 
+// ── MCP ↔ CLI name mapping (single source of truth) ─────────────────────────
+
+/// Maps an MCP tool name (underscore form, e.g. `"file_read"`) to the canonical
+/// CLI command specifier accepted by `build_schemas` (e.g. `"file read"`).
+/// Returns `None` for tool names that have no CLI counterpart.
+pub fn cli_cmd_for_mcp_tool(mcp_name: &str) -> Option<&'static str> {
+    match mcp_name {
+        "file_read" => Some("file read"),
+        "file_write" => Some("file write"),
+        "file_list" => Some("file list"),
+        "note_render" => Some("note render"),
+        "note_backlinks" => Some("note backlinks"),
+        "note_revision" => Some("note revision"),
+        "note_scan" => Some("note scan"),
+        "vault_search" => Some("vault search"),
+        "vault_status" => Some("vault status"),
+        "vault_scan" => Some("vault scan"),
+        _ => None,
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -368,5 +389,46 @@ mod tests {
         assert_eq!(envelope["kind"], "command_schema_list");
         assert!(envelope["commands"].is_array());
         assert!(envelope.get("data").is_none());
+    }
+
+    // ── MCP ↔ CLI mapping ─────────────────────────────────────────────────────
+
+    #[test]
+    fn all_10_mcp_tools_have_a_cli_mapping() {
+        let tools = [
+            "file_read", "file_write", "file_list",
+            "note_render", "note_backlinks", "note_revision", "note_scan",
+            "vault_search", "vault_status", "vault_scan",
+        ];
+        for &tool in &tools {
+            assert!(
+                cli_cmd_for_mcp_tool(tool).is_some(),
+                "no mapping for {tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_mcp_tool_returns_none() {
+        assert!(cli_cmd_for_mcp_tool("does_not_exist").is_none());
+    }
+
+    #[test]
+    fn every_mcp_tool_mapping_resolves_to_a_schema_with_description() {
+        let tools = [
+            "file_read", "file_write", "file_list",
+            "note_render", "note_backlinks", "note_revision", "note_scan",
+            "vault_search", "vault_status", "vault_scan",
+        ];
+        for &tool in &tools {
+            let cli_name = cli_cmd_for_mcp_tool(tool).unwrap();
+            let schemas = build_schemas(Some(cli_name))
+                .unwrap_or_else(|e| panic!("build_schemas failed for {cli_name}: {e}"));
+            assert_eq!(schemas.len(), 1, "expected single schema for {cli_name}");
+            assert!(
+                schemas[0].description.is_some(),
+                "description is None for {cli_name}"
+            );
+        }
     }
 }
