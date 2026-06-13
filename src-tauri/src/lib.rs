@@ -35,6 +35,7 @@ pub fn run() {
             commands::file::read_file,
             commands::file::write_file,
             commands::file::create_file,
+            commands::file::move_file,
             commands::file::set_editing_state,
             commands::vault::get_vault_root,
             commands::vault::open_vault_dialog,

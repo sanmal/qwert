@@ -229,6 +229,33 @@ pub fn create_file(vault_root: &Path, relative_path: &str) -> crate::Result<()> 
     Ok(())
 }
 
+/// Move a file within the vault (pure file-system move, no wikilink updates).
+///
+/// Semantics: distinct from Revision (rename + wikilink update + naming history).
+/// DnD move reorganises files structurally. Because wikilinks resolve by stem
+/// rather than by path, moving a file does not break existing `[[name]]` links.
+///
+/// Errors:
+/// - `PathTraversal` if either path escapes the vault
+/// - `NotFound` if `src_rel` does not exist, or if the destination parent dir does not exist
+/// - `Io(AlreadyExists)` if `dst_rel` already exists
+pub fn move_file(
+    vault_root: &Path,
+    src_rel: &str,
+    dst_rel: &str,
+) -> crate::Result<()> {
+    let src = resolve_path(vault_root, src_rel)?;
+    let dst = resolve_new_path(vault_root, dst_rel)?;
+    // Explicit check: fs::rename on Linux silently overwrites the target.
+    if dst.exists() {
+        return Err(crate::CoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("destination already exists: {dst_rel}"),
+        )));
+    }
+    std::fs::rename(&src, &dst).map_err(crate::CoreError::Io)
+}
+
 // ── Editing state (Level 3 hint) ─────────────────────────────────────────────
 
 /// Vault-relative path of the editing state file.
@@ -612,5 +639,74 @@ mod tests {
         let result = read_file(&root, "good.md");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "こんにちは🎉");
+    }
+
+    // ── move_file ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn move_file_succeeds_within_vault() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        std::fs::write(root.join("src.md"), "hello").unwrap();
+        std::fs::create_dir(root.join("sub")).unwrap();
+
+        move_file(&root, "src.md", "sub/src.md").unwrap();
+
+        assert!(!root.join("src.md").exists(), "source should be gone");
+        assert!(root.join("sub/src.md").exists(), "dest should exist");
+        assert_eq!(std::fs::read_to_string(root.join("sub/src.md")).unwrap(), "hello");
+    }
+
+    #[test]
+    fn move_file_rejects_traversal_in_src() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        // ../escape.md attempts to escape the vault
+        let result = move_file(&root, "../escape.md", "dst.md");
+        assert!(
+            matches!(result, Err(crate::CoreError::PathTraversal(_)) | Err(crate::CoreError::NotFound(_))),
+            "expected traversal or not-found error, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn move_file_rejects_traversal_in_dst() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        std::fs::write(root.join("note.md"), "content").unwrap();
+
+        let result = move_file(&root, "note.md", "../outside.md");
+        assert!(
+            matches!(result, Err(crate::CoreError::PathTraversal(_))),
+            "expected PathTraversal, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn move_file_rejects_dst_conflict() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        std::fs::write(root.join("a.md"), "aaa").unwrap();
+        std::fs::write(root.join("b.md"), "bbb").unwrap();
+
+        let result = move_file(&root, "a.md", "b.md");
+        assert!(
+            matches!(result, Err(crate::CoreError::Io(ref e)) if e.kind() == std::io::ErrorKind::AlreadyExists),
+            "expected AlreadyExists conflict, got {result:?}"
+        );
+        // neither file should be disturbed
+        assert_eq!(std::fs::read_to_string(root.join("a.md")).unwrap(), "aaa");
+        assert_eq!(std::fs::read_to_string(root.join("b.md")).unwrap(), "bbb");
+    }
+
+    #[test]
+    fn move_file_rejects_nonexistent_src() {
+        let vault = make_vault();
+        let root = vault.path().canonicalize().unwrap();
+        let result = move_file(&root, "ghost.md", "ghost2.md");
+        assert!(
+            matches!(result, Err(crate::CoreError::NotFound(_))),
+            "expected NotFound, got {result:?}"
+        );
     }
 }

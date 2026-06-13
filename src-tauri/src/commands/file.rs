@@ -68,6 +68,16 @@ pub fn create_file(path: String, state: State<'_, AppState>) -> Result<(), Strin
     vault::create_file(root, &path).map_err(|e| e.to_string())
 }
 
+/// Move a file within the vault (pure file-system rename, no wikilink updates).
+/// Semantics differ from Revision: this is structural reorganisation, not document revision.
+/// Wikilinks remain valid because they resolve by file-stem, not by path.
+#[tauri::command]
+pub fn move_file(src: String, dst: String, state: State<'_, AppState>) -> Result<(), String> {
+    let root = state.vault_root.lock().unwrap();
+    let root = root.as_ref().ok_or("No vault open")?;
+    vault::move_file(root, &src, &dst).map_err(|e| e.to_string())
+}
+
 /// Level 3 editing hint: record or clear the unsaved state for `path`.
 /// Called by the frontend whenever saveState transitions between UNSAVED and SAVED.
 #[tauri::command]
