@@ -4,14 +4,16 @@ use qwert_core::revision::{NamingStyle, RevisionRequest};
 use qwert_core::{link_index, markdown, revision, revision_diff, sanitize, vault};
 
 use super::exit_code::ExitCode;
-use super::format::{make_envelope, to_json_string, OutputFormat};
+use super::format::{make_envelope, to_json_string, tsv_row, OutputFormat};
 
 pub fn execute_render(path: &str, format: OutputFormat, vault_root: &Path) -> i32 {
     match vault::read_file(vault_root, path) {
         Ok(content) => {
             let html = markdown::render_markdown(&content);
             match format {
-                OutputFormat::Raw | OutputFormat::Text | OutputFormat::Diff => print!("{html}"),
+                OutputFormat::Raw | OutputFormat::Text | OutputFormat::Diff | OutputFormat::Tsv => {
+                    print!("{html}")
+                }
                 OutputFormat::Json => {
                     let v = make_envelope(
                         "note_render",
@@ -70,6 +72,12 @@ pub fn execute_backlinks(path: &str, format: OutputFormat, vault_root: &Path) ->
                         for s in &sources {
                             println!("{} ({} link(s))", s.path, s.wikilink_count);
                         }
+                    }
+                }
+                OutputFormat::Tsv => {
+                    println!("{}", tsv_row(["path", "wikilink_count"]));
+                    for s in &sources {
+                        println!("{}", tsv_row([s.path.as_str(), &s.wikilink_count.to_string()]));
                     }
                 }
             }
@@ -254,6 +262,21 @@ pub fn execute_scan(path: &str, format: OutputFormat, vault_root: &Path) -> i32 
                         f.char_hex()
                     );
                 }
+            }
+        }
+        OutputFormat::Tsv => {
+            println!("{}", tsv_row(["line", "column", "char_code", "char_hex", "category"]));
+            for f in &findings {
+                println!(
+                    "{}",
+                    tsv_row([
+                        &f.line.to_string(),
+                        &f.column.to_string(),
+                        &(f.char_value as u32).to_string(),
+                        &f.char_hex(),
+                        f.category_str(),
+                    ])
+                );
             }
         }
     }

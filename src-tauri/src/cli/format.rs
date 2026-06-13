@@ -8,6 +8,9 @@ pub enum OutputFormat {
     Raw,
     /// Unified diff output (only meaningful for `note revision --dry-run`)
     Diff,
+    /// Tab-separated values; tabular commands output one row per result.
+    /// Non-tabular commands (render, revision, status) fall back to text.
+    Tsv,
 }
 
 /// Merge `schema_version` + `kind` with payload fields at the top level.
@@ -25,6 +28,33 @@ pub fn make_envelope(kind: &str, payload: Value) -> Value {
 
 pub fn to_json_string(v: &Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+}
+
+/// Escape a single TSV field value.
+///
+/// `\`, `\t`, `\n`, `\r` are replaced by two-character backslash sequences so
+/// values never break column or row boundaries.
+pub fn tsv_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str(r"\\"),
+            '\t' => out.push_str(r"\t"),
+            '\n' => out.push_str(r"\n"),
+            '\r' => out.push_str(r"\r"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Join escaped fields with `\t` and return a single TSV row (no trailing newline).
+pub fn tsv_row(fields: impl IntoIterator<Item = impl AsRef<str>>) -> String {
+    fields
+        .into_iter()
+        .map(|f| tsv_escape(f.as_ref()))
+        .collect::<Vec<_>>()
+        .join("\t")
 }
 
 #[cfg(test)]
@@ -57,5 +87,68 @@ mod tests {
         assert_ne!(OutputFormat::Json, OutputFormat::Path);
         assert_ne!(OutputFormat::Raw, OutputFormat::Text);
         assert_ne!(OutputFormat::Json, OutputFormat::Raw);
+        assert_ne!(OutputFormat::Tsv, OutputFormat::Json);
+    }
+
+    // ── tsv_escape ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn tsv_escape_plain_string_unchanged() {
+        assert_eq!(tsv_escape("hello world"), "hello world");
+    }
+
+    #[test]
+    fn tsv_escape_empty_string() {
+        assert_eq!(tsv_escape(""), "");
+    }
+
+    #[test]
+    fn tsv_escape_tab_becomes_backslash_t() {
+        assert_eq!(tsv_escape("a\tb"), r"a\tb");
+    }
+
+    #[test]
+    fn tsv_escape_newline_becomes_backslash_n() {
+        assert_eq!(tsv_escape("a\nb"), r"a\nb");
+    }
+
+    #[test]
+    fn tsv_escape_carriage_return_becomes_backslash_r() {
+        assert_eq!(tsv_escape("a\rb"), r"a\rb");
+    }
+
+    #[test]
+    fn tsv_escape_backslash_is_doubled() {
+        assert_eq!(tsv_escape(r"a\b"), r"a\\b");
+    }
+
+    #[test]
+    fn tsv_escape_all_special_chars() {
+        // backslash + tab + newline + cr combined
+        assert_eq!(tsv_escape("\\\t\n\r"), r"\\\t\n\r");
+    }
+
+    // ── tsv_row ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn tsv_row_single_field() {
+        assert_eq!(tsv_row(["path"]), "path");
+    }
+
+    #[test]
+    fn tsv_row_multiple_fields_joined_with_tab() {
+        assert_eq!(tsv_row(["path", "line", "snippet"]), "path\tline\tsnippet");
+    }
+
+    #[test]
+    fn tsv_row_escapes_embedded_tab_in_field() {
+        // field value "a\tb" must not split the column
+        assert_eq!(tsv_row(["a\tb"]), r"a\tb");
+    }
+
+    #[test]
+    fn tsv_row_accepts_owned_strings() {
+        let fields = vec!["alpha".to_owned(), "beta".to_owned()];
+        assert_eq!(tsv_row(fields), "alpha\tbeta");
     }
 }

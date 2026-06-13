@@ -3,7 +3,7 @@ use std::path::Path;
 use qwert_core::{sanitize, search, status, vault};
 
 use super::exit_code::ExitCode;
-use super::format::{make_envelope, to_json_string, OutputFormat};
+use super::format::{make_envelope, to_json_string, tsv_row, OutputFormat};
 
 pub fn execute_search(
     query: &str,
@@ -50,6 +50,15 @@ pub fn execute_search(
                     }
                     eprintln!("{total} hit(s)");
                 }
+                OutputFormat::Tsv => {
+                    println!("{}", tsv_row(["path", "line", "snippet"]));
+                    for h in &hits {
+                        println!(
+                            "{}",
+                            tsv_row([h.path.as_str(), &h.line.to_string(), h.snippet.as_str()])
+                        );
+                    }
+                }
             }
             ExitCode::Success.as_i32()
         }
@@ -69,7 +78,8 @@ pub fn execute_status(format: OutputFormat, vault_root: &Path) -> i32 {
                 OutputFormat::Text
                 | OutputFormat::Raw
                 | OutputFormat::Diff
-                | OutputFormat::Path => {
+                | OutputFormat::Path
+                | OutputFormat::Tsv => {
                     if s.healthy {
                         println!("vault status: ok");
                     } else {
@@ -147,6 +157,27 @@ pub fn execute_scan(format: OutputFormat, vault_root: &Path) -> i32 {
                     }
                 }
                 eprintln!("{total} finding(s) in {} file(s)", all_findings.len());
+            }
+        }
+        OutputFormat::Tsv => {
+            println!(
+                "{}",
+                tsv_row(["path", "line", "column", "char_code", "char_hex", "category"])
+            );
+            for (path, findings) in &all_findings {
+                for f in findings {
+                    println!(
+                        "{}",
+                        tsv_row([
+                            path.as_str(),
+                            &f.line.to_string(),
+                            &f.column.to_string(),
+                            &(f.char_value as u32).to_string(),
+                            &f.char_hex(),
+                            f.category_str(),
+                        ])
+                    );
+                }
             }
         }
     }

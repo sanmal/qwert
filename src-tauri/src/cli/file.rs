@@ -5,14 +5,16 @@ use qwert_core::error::ActionableError;
 use qwert_core::vault::{self, WriteResult};
 
 use super::exit_code::ExitCode;
-use super::format::{make_envelope, to_json_string, OutputFormat};
+use super::format::{make_envelope, to_json_string, tsv_row, OutputFormat};
 use super::tty::is_tty;
 
 pub fn execute_read(path: &str, format: OutputFormat, vault_root: &Path) -> i32 {
     match vault::read_file_with_mtime(vault_root, path) {
         Ok((content, mtime)) => {
             match format {
-                OutputFormat::Raw | OutputFormat::Text | OutputFormat::Diff => print!("{content}"),
+                OutputFormat::Raw | OutputFormat::Text | OutputFormat::Diff | OutputFormat::Tsv => {
+                    print!("{content}")
+                }
                 OutputFormat::Json => {
                     let v = make_envelope(
                         "file_content",
@@ -130,6 +132,12 @@ pub fn execute_list(tree: bool, format: OutputFormat, vault_root: &Path) -> i32 
                             serde_json::json!({ "paths": paths, "count": paths.len() }),
                         );
                         println!("{}", to_json_string(&v));
+                    }
+                    OutputFormat::Tsv => {
+                        println!("{}", tsv_row(["path"]));
+                        for p in &paths {
+                            println!("{}", tsv_row([p.as_str()]));
+                        }
                     }
                     _ => {
                         for p in &paths {
