@@ -1,5 +1,4 @@
 use crate::AppState;
-use qwert_core::link_index;
 use serde::Serialize;
 use tauri::State;
 
@@ -10,22 +9,22 @@ pub struct BacklinkEntry {
 }
 
 /// Return all vault files that link to the note identified by `path`.
-/// The target stem is derived from `path` (e.g. "specs/auth.md" → "auth").
+/// Uses the in-memory `LinkIndex` cache (E1): warm calls skip file reads,
+/// only re-reading files whose mtime changed since the last call.
 #[tauri::command]
 pub fn get_backlinks(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<BacklinkEntry>, String> {
-    let root_lock = state.vault_root.lock().unwrap();
-    let root = root_lock.as_ref().ok_or("No vault open")?;
-
     let stem = std::path::Path::new(&path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(&path)
         .to_owned();
 
-    let sources = link_index::build_backlinks(root, &stem).map_err(|e| e.to_string())?;
+    let mut cache_lock = state.link_index.lock().unwrap();
+    let cache = cache_lock.as_mut().ok_or("No vault open")?;
+    let sources = cache.backlinks(&stem);
 
     Ok(sources
         .into_iter()
@@ -36,11 +35,11 @@ pub fn get_backlinks(
         .collect())
 }
 
-/// Resolve a wikilink target name to a vault-relative path using core normalization
-/// (NFC + case-insensitive).  Returns `null` when the target cannot be found.
+/// Resolve a wikilink target name to a vault-relative path.
+/// Uses the `LinkIndex` cache (E1).
 #[tauri::command]
 pub fn resolve_wikilink(target: String, state: State<'_, AppState>) -> Option<String> {
-    let root_lock = state.vault_root.lock().unwrap();
-    let root = root_lock.as_ref()?;
-    link_index::resolve_link_to_path(root, &target)
+    let mut cache_lock = state.link_index.lock().unwrap();
+    let cache = cache_lock.as_mut()?;
+    cache.resolve(&target)
 }

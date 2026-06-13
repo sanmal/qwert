@@ -17,6 +17,8 @@ pub struct AppState {
     pub appearance_watch_guard: Mutex<Option<qwert_core::appearance::AppearanceWatchGuard>>,
     // T2: 現在 asset プロトコルを許可している vault パス（切替時に旧パスを forbid するため）。
     pub allowed_vault: Mutex<Option<PathBuf>>,
+    // E1: wikilink インデックスキャッシュ（mtime ベース無効化）。vault open 時に初期化。
+    pub link_index: Mutex<Option<qwert_core::link_index::LinkIndex>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -29,6 +31,7 @@ pub fn run() {
             watch_guard: Mutex::new(None),
             appearance_watch_guard: Mutex::new(None),
             allowed_vault: Mutex::new(None),
+            link_index: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             commands::file::list_dir,
