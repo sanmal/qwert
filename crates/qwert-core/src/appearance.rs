@@ -714,6 +714,8 @@ pub fn global_config_path() -> Option<std::path::PathBuf> {
 }
 
 /// Persist `config` to the global `appearance.toml`, creating the directory if needed.
+/// Uses an atomic write (tmp → rename in the same directory) so a reader never
+/// observes a partial file, matching [`save_vault_appearance`] (C5).
 pub fn save_global_appearance(config: &AppearanceConfig) -> crate::Result<()> {
     let dirs = directories::ProjectDirs::from("", "", "qwert")
         .ok_or_else(|| crate::CoreError::NotFound("config directory not found".to_owned()))?;
@@ -721,7 +723,13 @@ pub fn save_global_appearance(config: &AppearanceConfig) -> crate::Result<()> {
     std::fs::create_dir_all(config_dir)?;
     let path = config_dir.join("appearance.toml");
     let content = toml::to_string_pretty(config)?;
-    std::fs::write(path, content)?;
+    // Atomic: write to a tmp file in the same directory, then rename.
+    // Same-directory placement keeps the rename on one filesystem.
+    let mut tmp = tempfile::NamedTempFile::new_in(config_dir)?;
+    use std::io::Write as _;
+    tmp.write_all(content.as_bytes())?;
+    tmp.persist(&path)
+        .map_err(|e| crate::CoreError::Io(e.error))?;
     Ok(())
 }
 
@@ -744,29 +752,37 @@ pub fn save_vault_appearance(vault_root: &Path, config: &AppearanceConfig) -> cr
 }
 
 /// TOML template for `appearance.toml` (no AI protocol — Phase 3).
+///
+/// All configuration lines are commented out so parsing the freshly generated
+/// file yields the built-in defaults (§18). Uncommenting a value overrides only
+/// that field; leaving everything commented keeps the runtime defaults even if
+/// they change in a future release.
 pub const APPEARANCE_TEMPLATE: &str = r##"# qwert appearance.toml (global scope)
 # Apply a preset:   qwert appearance set --preset <name>
 # Custom colors:    qwert appearance set --fg '#1a1a1a' --bg '#ffffff'
 #
 # Available presets: default, high-contrast, dark, dark-high-contrast
-
-[text]
-font_size = 16
-font_family = "system-ui, sans-serif"
-line_height = 1.6
-letter_spacing = 0.0
-word_spacing = 0.0
-editor_max_width = 72
-
-[color]
+#
+# All lines below are commented out: this file yields the built-in defaults
+# until you uncomment and edit a value.
+#
+# [text]
+# font_size = 16
+# font_family = "system-ui, sans-serif"
+# line_height = 1.6
+# letter_spacing = 0.0
+# word_spacing = 0.0
+# editor_max_width = 72
+#
+# [color]
 # Choose one of:
 #   preset = "default"  # default | high-contrast | dark | dark-high-contrast
 # or both custom hex colors (fg and bg must be specified together – F24):
 #   fg = "#1a1a1a"
 #   bg = "#ffffff"
-
-[highlight]
-enabled = true
+#
+# [highlight]
+# enabled = true
 "##;
 
 /// Template for `<vault>/.qwert/appearance.toml` (vault scope, AI protocol included).
@@ -1406,6 +1422,19 @@ mod tests {
     }
 
     // ─── C6: vault template / init_vault_appearance ───────────────────────────
+
+    #[test]
+    fn global_template_parses_as_default_config() {
+        // C4/C-4: all lines are commented out → parses to built-in defaults.
+        let config: AppearanceConfig = toml::from_str(APPEARANCE_TEMPLATE).unwrap();
+        let defaults = AppearanceConfig::default();
+        assert_eq!(config.text.font_size, defaults.text.font_size);
+        assert_eq!(config.text.font_family, defaults.text.font_family);
+        assert_eq!(config.color.preset, defaults.color.preset);
+        assert_eq!(config.color.fg, defaults.color.fg);
+        assert_eq!(config.color.bg, defaults.color.bg);
+        assert_eq!(config.highlight.enabled, defaults.highlight.enabled);
+    }
 
     #[test]
     fn vault_template_parses_as_default_config() {

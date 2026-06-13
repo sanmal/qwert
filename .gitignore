@@ -45,9 +45,14 @@ mise.local.toml
 # ---- Tauri generated (Android etc., Phase 4) ----
 /src-tauri/gen/
 
+# ---- Cargo lockfile (workspace: only the root Cargo.lock is authoritative) ----
+# src-tauri is a workspace member, so its Cargo.lock is a stale leftover (C-1).
+/src-tauri/Cargo.lock
+
 # ---- qwert vault runtime (in case a vault lives under the repo) ----
 .qwert/cache/
 .qwert/pending-revision.json
+.qwert/editing_state.json
 
 # ---- Local task notes (kept out of the public repo) ----
 /docs/tasks*

@@ -1,2 +1,4 @@
 [tools]
 node = "24"
+# qwert-core は edition 2024 + let-chains を使用するため Rust 1.88 以上が必須。
+rust = "1.88"

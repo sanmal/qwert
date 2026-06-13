@@ -8,3 +8,4 @@
 
 .qwert/cache/
 .qwert/pending-revision.json
+.qwert/editing_state.json
