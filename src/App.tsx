@@ -14,8 +14,22 @@ import { VaultStatusBanner } from "./components/VaultStatusBanner";
 import { vaultStore } from "./stores/vault";
 import { editorStore } from "./stores/editor";
 import { appearanceStore } from "./stores/appearance";
+import { settingsStore } from "./stores/settings";
 import * as tauri from "./lib/tauri";
+import type { RelativePath } from "./types/brand";
 import "./App.css";
+
+/** Returns true when `e` matches a key spec like "Ctrl+S" or "Ctrl+Shift+F". */
+function matchesSpec(e: KeyboardEvent, spec: string): boolean {
+  const parts = spec.split("+");
+  const key = parts.at(-1) ?? "";
+  const mods = parts.slice(0, -1);
+  if (e.ctrlKey !== mods.includes("Ctrl")) return false;
+  if (e.altKey !== mods.includes("Alt")) return false;
+  if (e.shiftKey !== mods.includes("Shift")) return false;
+  if (e.metaKey !== mods.includes("Meta")) return false;
+  return e.key.toLowerCase() === key.toLowerCase();
+}
 
 export default function App() {
   const [viewMode, setViewMode] = createSignal<ViewMode>(VIEW_MODE.SPLIT);
@@ -27,6 +41,7 @@ export default function App() {
 
   onMount(() => {
     appearanceStore.applyAppearance();
+    void settingsStore.loadKeybindings();
 
     editorStore.registerSaveCallback(async () => {
       const file = vaultStore.selectedFile();
@@ -60,33 +75,40 @@ export default function App() {
     });
 
     // C6: keydown ハンドラは1つだけ登録し、onCleanup で解除する。
+    // キー仕様は settingsStore.keybindings() から動的に読む（再割当に即時対応）。
+    const kb = settingsStore.keybindings;
     const onKey = (e: KeyboardEvent) => {
-      if (!e.ctrlKey) return;
-      switch (e.key) {
-        case "s":
-          e.preventDefault();
-          void editorStore.saveCurrentFile();
-          break;
-        case ",":
-          e.preventDefault();
-          setShowSettings(v => !v);
-          break;
-        case "b":
-          e.preventDefault();
-          setShowSidebar(v => !v);
-          break;
-        case "p":
-          e.preventDefault();
-          setShowPalette(v => !v);
-          break;
-        case "e":
-          e.preventDefault();
-          setViewMode(current => {
-            const modes = [VIEW_MODE.EDITOR, VIEW_MODE.SPLIT, VIEW_MODE.PREVIEW] as const;
-            const idx = modes.indexOf(current);
-            return modes[(idx + 1) % modes.length] ?? VIEW_MODE.SPLIT;
-          });
-          break;
+      if (matchesSpec(e, kb().save)) {
+        e.preventDefault();
+        void editorStore.saveCurrentFile();
+      } else if (matchesSpec(e, kb().new_note)) {
+        e.preventDefault();
+        const name = prompt("ファイル名（拡張子 .md は自動付加）:");
+        if (!name) return;
+        const path = (name.endsWith(".md") ? name : `${name}.md`) as RelativePath;
+        void tauri.createFile(path).then(async () => {
+          await vaultStore.refreshFileTree();
+          vaultStore.setSelectedFile(path);
+        });
+      } else if (matchesSpec(e, kb().command_palette)) {
+        e.preventDefault();
+        setShowPalette(v => !v);
+      } else if (matchesSpec(e, kb().full_search)) {
+        e.preventDefault();
+        // 全文検索は未実装（Phase 3 以降）
+      } else if (matchesSpec(e, kb().view_mode_toggle)) {
+        e.preventDefault();
+        setViewMode(current => {
+          const modes = [VIEW_MODE.EDITOR, VIEW_MODE.SPLIT, VIEW_MODE.PREVIEW] as const;
+          const idx = modes.indexOf(current);
+          return modes[(idx + 1) % modes.length] ?? VIEW_MODE.SPLIT;
+        });
+      } else if (matchesSpec(e, kb().sidebar_toggle)) {
+        e.preventDefault();
+        setShowSidebar(v => !v);
+      } else if (matchesSpec(e, kb().settings)) {
+        e.preventDefault();
+        setShowSettings(v => !v);
       }
     };
     document.addEventListener("keydown", onKey);

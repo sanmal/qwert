@@ -4,4 +4,5 @@ pub mod link;
 pub mod markdown;
 pub mod revision;
 pub mod sanitize;
+pub mod settings;
 pub mod vault;

@@ -7,6 +7,63 @@ pub fn load_global_config() -> Config {
     load_config_from_path(&dirs.config_dir().join("config.toml"))
 }
 
+pub fn save_global_config(config: &Config) -> Result<(), std::io::Error> {
+    let Some(dirs) = directories::ProjectDirs::from("", "", "qwert") else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "could not determine config directory",
+        ));
+    };
+    let path = dirs.config_dir().join("config.toml");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let content = toml::to_string_pretty(config)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+    std::fs::write(path, content)
+}
+
+/// Returns `true` if `spec` is a syntactically valid key specification.
+/// Format: one or more modifiers (Ctrl, Alt, Shift, Meta) separated by `+`,
+/// followed by a single non-empty key name.  E.g. "Ctrl+S", "Ctrl+Shift+F".
+pub fn is_valid_key_spec(spec: &str) -> bool {
+    let parts: Vec<&str> = spec.split('+').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    let Some((key, modifiers)) = parts.split_last() else {
+        return false;
+    };
+    if key.trim().is_empty() {
+        return false;
+    }
+    let valid_modifiers = ["Ctrl", "Alt", "Shift", "Meta"];
+    !modifiers.is_empty() && modifiers.iter().all(|m| valid_modifiers.contains(m))
+}
+
+/// Returns key specs that appear more than once across all keybinding actions.
+/// Comparison is case-insensitive.
+pub fn duplicate_key_specs(kb: &KeybindingsConfig) -> Vec<String> {
+    let specs = [
+        &kb.save,
+        &kb.new_note,
+        &kb.command_palette,
+        &kb.full_search,
+        &kb.view_mode_toggle,
+        &kb.sidebar_toggle,
+        &kb.settings,
+    ];
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut dups: Vec<String> = Vec::new();
+    for spec in specs {
+        let lower = spec.to_lowercase();
+        if !seen.insert(lower) && !dups.iter().any(|d: &String| d.eq_ignore_ascii_case(spec)) {
+            dups.push(spec.clone());
+        }
+    }
+    dups
+}
+
 pub fn load_config_from_path(path: &std::path::Path) -> Config {
     let content = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -30,6 +87,7 @@ pub struct Config {
     pub preview: PreviewConfig,
     pub revision: RevisionConfig,
     pub sanitize: SanitizeConfig,
+    pub keybindings: KeybindingsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +145,32 @@ impl Default for SanitizeConfig {
     fn default() -> Self {
         Self {
             warn_invisible_chars: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct KeybindingsConfig {
+    pub save: String,
+    pub new_note: String,
+    pub command_palette: String,
+    pub full_search: String,
+    pub view_mode_toggle: String,
+    pub sidebar_toggle: String,
+    pub settings: String,
+}
+
+impl Default for KeybindingsConfig {
+    fn default() -> Self {
+        Self {
+            save: "Ctrl+S".to_owned(),
+            new_note: "Ctrl+N".to_owned(),
+            command_palette: "Ctrl+P".to_owned(),
+            full_search: "Ctrl+Shift+F".to_owned(),
+            view_mode_toggle: "Ctrl+E".to_owned(),
+            sidebar_toggle: "Ctrl+B".to_owned(),
+            settings: "Ctrl+,".to_owned(),
         }
     }
 }
@@ -200,5 +284,84 @@ mod tests {
         let c = load_config_from_path(tmp.path());
         assert_eq!(c.general.autosave_delay_ms, 3000);
         assert_eq!(c.revision.naming, "increment");
+    }
+
+    // ── keybindings ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn keybindings_default_values_match_spec() {
+        let kb = KeybindingsConfig::default();
+        assert_eq!(kb.save, "Ctrl+S");
+        assert_eq!(kb.new_note, "Ctrl+N");
+        assert_eq!(kb.command_palette, "Ctrl+P");
+        assert_eq!(kb.full_search, "Ctrl+Shift+F");
+        assert_eq!(kb.view_mode_toggle, "Ctrl+E");
+        assert_eq!(kb.sidebar_toggle, "Ctrl+B");
+        assert_eq!(kb.settings, "Ctrl+,");
+    }
+
+    #[test]
+    fn keybindings_empty_toml_yields_defaults() {
+        let c: Config = toml::from_str("").unwrap();
+        assert_eq!(c.keybindings, KeybindingsConfig::default());
+    }
+
+    #[test]
+    fn keybindings_parsed_from_toml() {
+        let toml = "[keybindings]\nsave = \"Ctrl+Alt+S\"\nnew_note = \"Ctrl+N\"";
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c.keybindings.save, "Ctrl+Alt+S");
+        assert_eq!(c.keybindings.new_note, "Ctrl+N");
+        // unspecified keys fall back to defaults
+        assert_eq!(c.keybindings.command_palette, "Ctrl+P");
+    }
+
+    #[test]
+    fn is_valid_key_spec_accepts_valid_specs() {
+        assert!(is_valid_key_spec("Ctrl+S"));
+        assert!(is_valid_key_spec("Ctrl+Shift+F"));
+        assert!(is_valid_key_spec("Ctrl+,"));
+        assert!(is_valid_key_spec("Ctrl+N"));
+        assert!(is_valid_key_spec("Alt+F4"));
+        assert!(is_valid_key_spec("Ctrl+Alt+Delete"));
+    }
+
+    #[test]
+    fn is_valid_key_spec_rejects_invalid_specs() {
+        assert!(!is_valid_key_spec("S"));           // no modifier
+        assert!(!is_valid_key_spec("Ctrl+"));       // empty key
+        assert!(!is_valid_key_spec(""));            // empty string
+        assert!(!is_valid_key_spec("Ctrl"));        // modifier only, no key part
+        assert!(!is_valid_key_spec("Bad+S"));       // unknown modifier
+    }
+
+    #[test]
+    fn duplicate_key_specs_detects_dups() {
+        let mut kb = KeybindingsConfig::default();
+        kb.new_note = "Ctrl+S".to_owned(); // duplicate of save
+        let dups = duplicate_key_specs(&kb);
+        assert!(dups.iter().any(|d| d.eq_ignore_ascii_case("Ctrl+S")));
+    }
+
+    #[test]
+    fn duplicate_key_specs_none_for_defaults() {
+        let kb = KeybindingsConfig::default();
+        assert!(duplicate_key_specs(&kb).is_empty());
+    }
+
+    #[test]
+    fn save_and_reload_keybindings_roundtrip() {
+        use std::io::Write as _;
+        // Build a config, serialize to a temp file, reload, verify
+        let mut config = Config::default();
+        config.keybindings.save = "Ctrl+Alt+S".to_owned();
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = toml::to_string_pretty(&config).unwrap();
+        write!(tmp, "{content}").unwrap();
+
+        let reloaded = load_config_from_path(tmp.path());
+        assert_eq!(reloaded.keybindings.save, "Ctrl+Alt+S");
+        assert_eq!(reloaded.keybindings.new_note, "Ctrl+N");
     }
 }

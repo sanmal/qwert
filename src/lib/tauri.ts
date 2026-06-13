@@ -179,3 +179,23 @@ export async function executeRevisionNote(
 ): Promise<RevisionResult> {
   return invoke<RevisionResult>("execute_revision_note", { path, naming, name });
 }
+
+// ── Keybindings (D2) ──────────────────────────────────────────────────────────
+
+export interface Keybindings {
+  save: string;
+  new_note: string;
+  command_palette: string;
+  full_search: string;
+  view_mode_toggle: string;
+  sidebar_toggle: string;
+  settings: string;
+}
+
+export async function getKeybindings(): Promise<Keybindings> {
+  return invoke<Keybindings>("get_keybindings");
+}
+
+export async function saveKeybindings(kb: Keybindings): Promise<void> {
+  return invoke<void>("save_keybindings", { kb });
+}

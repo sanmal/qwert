@@ -49,6 +49,8 @@ pub fn run() {
             commands::revision::execute_revision_note,
             commands::sanitize::scan_note,
             commands::sanitize::scan_vault_files,
+            commands::settings::get_keybindings,
+            commands::settings::save_keybindings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
