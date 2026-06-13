@@ -328,11 +328,11 @@ mod tests {
 
     #[test]
     fn is_valid_key_spec_rejects_invalid_specs() {
-        assert!(!is_valid_key_spec("S"));           // no modifier
-        assert!(!is_valid_key_spec("Ctrl+"));       // empty key
-        assert!(!is_valid_key_spec(""));            // empty string
-        assert!(!is_valid_key_spec("Ctrl"));        // modifier only, no key part
-        assert!(!is_valid_key_spec("Bad+S"));       // unknown modifier
+        assert!(!is_valid_key_spec("S")); // no modifier
+        assert!(!is_valid_key_spec("Ctrl+")); // empty key
+        assert!(!is_valid_key_spec("")); // empty string
+        assert!(!is_valid_key_spec("Ctrl")); // modifier only, no key part
+        assert!(!is_valid_key_spec("Bad+S")); // unknown modifier
     }
 
     #[test]

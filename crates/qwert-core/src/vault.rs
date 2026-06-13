@@ -239,11 +239,7 @@ pub fn create_file(vault_root: &Path, relative_path: &str) -> crate::Result<()> 
 /// - `PathTraversal` if either path escapes the vault
 /// - `NotFound` if `src_rel` does not exist, or if the destination parent dir does not exist
 /// - `Io(AlreadyExists)` if `dst_rel` already exists
-pub fn move_file(
-    vault_root: &Path,
-    src_rel: &str,
-    dst_rel: &str,
-) -> crate::Result<()> {
+pub fn move_file(vault_root: &Path, src_rel: &str, dst_rel: &str) -> crate::Result<()> {
     let src = resolve_path(vault_root, src_rel)?;
     let dst = resolve_new_path(vault_root, dst_rel)?;
     // Explicit check: fs::rename on Linux silently overwrites the target.
@@ -283,9 +279,7 @@ pub fn read_editing_paths(vault_root: &Path) -> Vec<String> {
 
 /// Returns true when `rel_path` is currently open and unsaved in the GUI.
 pub fn is_editing(vault_root: &Path, rel_path: &str) -> bool {
-    read_editing_paths(vault_root)
-        .iter()
-        .any(|p| p == rel_path)
+    read_editing_paths(vault_root).iter().any(|p| p == rel_path)
 }
 
 /// Set or clear the editing state for `rel_path`.
@@ -654,7 +648,10 @@ mod tests {
 
         assert!(!root.join("src.md").exists(), "source should be gone");
         assert!(root.join("sub/src.md").exists(), "dest should exist");
-        assert_eq!(std::fs::read_to_string(root.join("sub/src.md")).unwrap(), "hello");
+        assert_eq!(
+            std::fs::read_to_string(root.join("sub/src.md")).unwrap(),
+            "hello"
+        );
     }
 
     #[test]
@@ -664,7 +661,10 @@ mod tests {
         // ../escape.md attempts to escape the vault
         let result = move_file(&root, "../escape.md", "dst.md");
         assert!(
-            matches!(result, Err(crate::CoreError::PathTraversal(_)) | Err(crate::CoreError::NotFound(_))),
+            matches!(
+                result,
+                Err(crate::CoreError::PathTraversal(_)) | Err(crate::CoreError::NotFound(_))
+            ),
             "expected traversal or not-found error, got {result:?}"
         );
     }

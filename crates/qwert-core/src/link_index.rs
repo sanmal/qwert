@@ -744,7 +744,10 @@ mod tests {
         // Delete the referring file; warm refresh should remove the stale entry
         fs::remove_file(root.join("ref.md")).unwrap();
         let second = index.backlinks("auth");
-        assert!(second.is_empty(), "expected no backlinks after ref.md removed: {second:?}");
+        assert!(
+            second.is_empty(),
+            "expected no backlinks after ref.md removed: {second:?}"
+        );
     }
 
     #[test]
@@ -764,7 +767,11 @@ mod tests {
 
         // Next refresh should detect the new file (mtime or absence in cache)
         let second = index.backlinks("auth");
-        assert_eq!(second.len(), 1, "expected new.md to be picked up: {second:?}");
+        assert_eq!(
+            second.len(),
+            1,
+            "expected new.md to be picked up: {second:?}"
+        );
     }
 
     /// Performance benchmark — run manually to reproduce the measurements

@@ -81,7 +81,11 @@ pub fn move_file(src: String, dst: String, state: State<'_, AppState>) -> Result
 /// Level 3 editing hint: record or clear the unsaved state for `path`.
 /// Called by the frontend whenever saveState transitions between UNSAVED and SAVED.
 #[tauri::command]
-pub fn set_editing_state(path: String, is_editing: bool, state: State<'_, AppState>) -> Result<(), String> {
+pub fn set_editing_state(
+    path: String,
+    is_editing: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let root = state.vault_root.lock().unwrap();
     let root = root.as_ref().ok_or("No vault open")?;
     vault::set_editing_path(root, &path, is_editing);

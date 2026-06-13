@@ -86,8 +86,7 @@ pub async fn open_vault_dialog(
     }
 
     // E1: wikilink インデックスキャッシュを新 vault で初期化（旧 vault の cache は置換で破棄）。
-    *state.link_index.lock().unwrap() =
-        Some(qwert_core::link_index::LinkIndex::new(&canonical));
+    *state.link_index.lock().unwrap() = Some(qwert_core::link_index::LinkIndex::new(&canonical));
 
     Ok(Some(canonical.to_string_lossy().into_owned()))
 }

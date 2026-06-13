@@ -77,7 +77,10 @@ pub fn execute_backlinks(path: &str, format: OutputFormat, vault_root: &Path) ->
                 OutputFormat::Tsv => {
                     println!("{}", tsv_row(["path", "wikilink_count"]));
                     for s in &sources {
-                        println!("{}", tsv_row([s.path.as_str(), &s.wikilink_count.to_string()]));
+                        println!(
+                            "{}",
+                            tsv_row([s.path.as_str(), &s.wikilink_count.to_string()])
+                        );
                     }
                 }
             }
@@ -265,7 +268,10 @@ pub fn execute_scan(path: &str, format: OutputFormat, vault_root: &Path) -> i32 
             }
         }
         OutputFormat::Tsv => {
-            println!("{}", tsv_row(["line", "column", "char_code", "char_hex", "category"]));
+            println!(
+                "{}",
+                tsv_row(["line", "column", "char_code", "char_hex", "category"])
+            );
             for f in &findings {
                 println!(
                     "{}",

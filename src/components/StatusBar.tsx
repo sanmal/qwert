@@ -27,9 +27,14 @@ export function StatusBar() {
     () => tauri.getAppearanceStatus(),
   );
 
-  const contrastData = () => {
+  const contrastData = (): { ratio: number | null; level: string } | null => {
     const s = statusResource();
-    if (!s || s.contrast_ratio == null) return null;
+    if (!s) return null;
+    // F24（fg/bg の片側のみ指定）等で ratio が出せなくても、
+    // level==="fail" なら検知バッジを表示する（§13 の検知メカニズム）。
+    if (s.contrast_ratio == null) {
+      return s.level === "fail" ? { ratio: null, level: "fail" } : null;
+    }
     return { ratio: s.contrast_ratio, level: s.level ?? "fail" };
   };
 
@@ -48,9 +53,13 @@ export function StatusBar() {
         {(cd) => (
           <span
             class={cd.level !== "fail" ? "status-contrast-ok" : "status-contrast-warn"}
-            title={`コントラスト比 ${cd.ratio.toFixed(2)}:1 (${cd.level === "fail" ? "AA未満" : cd.level})`}
+            title={
+              cd.ratio == null
+                ? "コントラスト比を判定できません（fg/bg の片方のみ指定 — F24）"
+                : `コントラスト比 ${cd.ratio.toFixed(2)}:1 (${cd.level === "fail" ? "AA未満" : cd.level})`
+            }
           >
-            CR {cd.ratio.toFixed(1)}
+            {cd.ratio == null ? "CR ⚠" : `CR ${cd.ratio.toFixed(1)}`}
           </span>
         )}
       </Show>

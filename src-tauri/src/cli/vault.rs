@@ -162,7 +162,14 @@ pub fn execute_scan(format: OutputFormat, vault_root: &Path) -> i32 {
         OutputFormat::Tsv => {
             println!(
                 "{}",
-                tsv_row(["path", "line", "column", "char_code", "char_hex", "category"])
+                tsv_row([
+                    "path",
+                    "line",
+                    "column",
+                    "char_code",
+                    "char_hex",
+                    "category"
+                ])
             );
             for (path, findings) in &all_findings {
                 for f in findings {

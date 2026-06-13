@@ -299,6 +299,8 @@ pub fn execute_status(format: OutputFormat, vault_root: &Path) -> i32 {
             }
             match (status.contrast_ratio, status.level.as_deref()) {
                 (Some(ratio), Some(level)) => println!("Contrast: {ratio:.2}:1 ({level})"),
+                // ratio は出せないが level=="fail"（F24 片側指定など）→ 検知を表示。
+                (None, Some(level)) => println!("Contrast: {level}"),
                 _ => println!("Contrast: n/a"),
             }
         }

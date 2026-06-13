@@ -258,6 +258,9 @@ pub fn format_appearance_warning(err: &crate::CoreError) -> String {
         crate::CoreError::AppearanceConflict(_) => {
             "appearance.toml conflict: conflicting keys preset, fg/bg — remove one".to_owned()
         }
+        crate::CoreError::AppearanceValidation(msg) => {
+            format!("appearance.toml validation error: {msg}")
+        }
         other => format!("appearance error: {other}"),
     }
 }
@@ -303,19 +306,42 @@ pub fn resolve_appearance_with_fallback(vault_root: Option<&Path>) -> Appearance
             }
         }
     }
-    AppearanceResolution {
-        config: load_global_appearance().unwrap_or_default(),
-        scope: AppearanceScope::Global,
-        warning: None,
+    // global 経路（vault 未指定 / vault ファイル無し）でも F24・相互排他を検証する。
+    // 壊れていれば既定値へフォールバックし warning を立てる（アプリは必ず起動）。
+    match load_global_appearance() {
+        Ok(cfg) => match validate_appearance_config(&cfg) {
+            Ok(()) => AppearanceResolution {
+                config: cfg,
+                scope: AppearanceScope::Global,
+                warning: None,
+            },
+            Err(e) => AppearanceResolution {
+                config: AppearanceConfig::default(),
+                scope: AppearanceScope::Global,
+                warning: Some(format_appearance_warning(&e)),
+            },
+        },
+        Err(e) => AppearanceResolution {
+            config: AppearanceConfig::default(),
+            scope: AppearanceScope::Global,
+            warning: Some(format_appearance_warning(&e)),
+        },
     }
 }
 
-/// Validate mutual-exclusion constraint (preset and fg/bg cannot coexist).
-/// Returns an error with the conflicting key names; otherwise `Ok(())`.
+/// Validate mutual-exclusion (preset vs fg/bg) and the F24 pair rule
+/// (fg and bg must both be set, or both unset). Returns an error naming the
+/// offending keys; otherwise `Ok(())`.
 fn validate_appearance_config(config: &AppearanceConfig) -> crate::Result<()> {
     if config.color.preset.is_some() && (config.color.fg.is_some() || config.color.bg.is_some()) {
         return Err(crate::CoreError::AppearanceConflict(
             "preset and fg/bg cannot be set at the same time".to_owned(),
+        ));
+    }
+    // F24: fg と bg は両方指定 or 両方未指定でなければならない（片側のみは不可）。
+    if config.color.fg.is_some() != config.color.bg.is_some() {
+        return Err(crate::CoreError::AppearanceValidation(
+            "fg and bg must both be specified together (F24)".to_owned(),
         ));
     }
     Ok(())
@@ -448,16 +474,15 @@ pub fn to_css_vars(config: &AppearanceConfig) -> crate::Result<HashMap<String, S
             map.insert("data-theme".to_owned(), preset.clone());
         }
     } else {
-        // fg/bg custom colors
-        if let Some(fg) = &config.color.fg
-            && is_valid_color(fg)
-        {
-            map.insert("--qw-fg".to_owned(), fg.clone());
-        }
-        if let Some(bg) = &config.color.bg
-            && is_valid_color(bg)
-        {
-            map.insert("--qw-bg".to_owned(), bg.clone());
+        // fg/bg custom colors — F24: emit ONLY as a valid pair (both present and
+        // both safe). A one-sided spec (e.g. only fg) would leave the other at its
+        // default (e.g. white bg) and can make text invisible, so emit neither.
+        match (&config.color.fg, &config.color.bg) {
+            (Some(fg), Some(bg)) if is_valid_color(fg) && is_valid_color(bg) => {
+                map.insert("--qw-fg".to_owned(), fg.clone());
+                map.insert("--qw-bg".to_owned(), bg.clone());
+            }
+            _ => {}
         }
     }
 
@@ -621,12 +646,41 @@ pub struct AppearanceStatus {
     pub highlight: HighlightConfig,
 }
 
-/// Compute the full appearance status. Always succeeds (falls back to global on
-/// vault config error, matching startup behaviour). When a preset is active, its
-/// representative colors from [`preset_fg_bg`] are used for contrast calculation.
+/// Contrast ratio (2dp) and WCAG level for an effective fg/bg pair.
+///
+/// - both present & parseable → `(Some(ratio), Some(level))`
+/// - exactly one present (F24 violation) → `(None, Some("fail"))` so the status
+///   bar surfaces the broken pair (§13 detection promise)
+/// - both present but unparseable → `(None, None)`
+/// - neither present → `(None, None)` (genuinely no custom color)
+fn fg_bg_contrast(fg: Option<&str>, bg: Option<&str>) -> (Option<f64>, Option<String>) {
+    match (fg, bg) {
+        (Some(f), Some(b)) => match contrast_ratio(f, b) {
+            Ok(r) => (
+                Some((r * 100.0).round() / 100.0),
+                Some(wcag_level(r, false).to_owned()),
+            ),
+            Err(_) => (None, None),
+        },
+        // F24: fg・bg のどちらか一方のみ → 有効なペアでない。
+        // §13「appearance status で検知」を満たすため fail を返す。
+        (Some(_), None) | (None, Some(_)) => (None, Some("fail".to_owned())),
+        (None, None) => (None, None),
+    }
+}
+
+/// Compute the full appearance status. This is the **detection** path (§13): it
+/// reads the user's actual config via [`resolve_appearance`] (which does NOT
+/// silently fall back on validation errors), so a one-sided fg/bg (F24) is
+/// surfaced as `level = "fail"` rather than being hidden by a fallback. Only an
+/// unreadable/unparseable file falls back to defaults. When a preset is active,
+/// its representative colors from [`preset_fg_bg`] are used for contrast.
 pub fn compute_appearance_status(vault_root: Option<&Path>) -> AppearanceStatus {
-    let resolution = resolve_appearance_with_fallback(vault_root);
-    let config = &resolution.config;
+    let (config, scope) = match resolve_appearance(vault_root) {
+        Ok(pair) => pair,
+        // Unreadable / invalid TOML → defaults (no custom color); app stays usable.
+        Err(_) => (AppearanceConfig::default(), AppearanceScope::Global),
+    };
 
     let (fg, bg) = if let Some(ref preset) = config.color.preset {
         preset_fg_bg(preset)
@@ -636,21 +690,12 @@ pub fn compute_appearance_status(vault_root: Option<&Path>) -> AppearanceStatus 
         (config.color.fg.clone(), config.color.bg.clone())
     };
 
-    let (contrast, level) = match (&fg, &bg) {
-        (Some(f), Some(b)) => match contrast_ratio(f, b) {
-            Ok(r) => {
-                let r2 = (r * 100.0).round() / 100.0;
-                (Some(r2), Some(wcag_level(r, false).to_owned()))
-            }
-            Err(_) => (None, None),
-        },
-        _ => (None, None),
-    };
+    let (contrast, level) = fg_bg_contrast(fg.as_deref(), bg.as_deref());
 
     AppearanceStatus {
         schema_version: "v1".to_owned(),
         kind: "appearance_status".to_owned(),
-        scope: resolution.scope,
+        scope,
         preset: config.color.preset.clone(),
         fg,
         bg,
@@ -825,8 +870,12 @@ mod tests {
         config.color.fg = Some("url(http://evil.com)".to_owned());
         config.color.bg = Some("#ffffff".to_owned());
         let vars = to_css_vars(&config).unwrap();
+        // 対策案2: fg が無効なら有効なペアにならない → bg も emit しない。
         assert!(!vars.contains_key("--qw-fg"), "url() must be rejected");
-        assert!(vars.contains_key("--qw-bg"));
+        assert!(
+            !vars.contains_key("--qw-bg"),
+            "without a valid fg, bg must not be emitted alone (F24)"
+        );
     }
 
     #[test]
@@ -1435,6 +1484,144 @@ mod tests {
         assert_eq!(
             content, "[color]\n",
             "existing file must not be overwritten"
+        );
+    }
+
+    // ─── A-1 対策案1: F24 validation + global path ─────────────────────────────
+
+    #[test]
+    fn validate_rejects_one_sided_fg() {
+        let mut cfg = AppearanceConfig::default();
+        cfg.color.fg = Some("#ffffff".to_owned()); // bg 無し
+        assert!(
+            validate_appearance_config(&cfg).is_err(),
+            "fg only must be rejected (F24)"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_one_sided_bg() {
+        let mut cfg = AppearanceConfig::default();
+        cfg.color.bg = Some("#000000".to_owned()); // fg 無し
+        assert!(
+            validate_appearance_config(&cfg).is_err(),
+            "bg only must be rejected (F24)"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_both_fg_bg() {
+        let cfg = config_with_fg_bg("#111111", "#eeeeee");
+        assert!(validate_appearance_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn one_sided_vault_config_falls_back_to_global_with_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        std::fs::write(
+            root.join(".qwert").join("appearance.toml"),
+            "[color]\nfg = \"#ffffff\"\n", // bg 欠落 → F24 違反
+        )
+        .unwrap();
+
+        let res = resolve_appearance_with_fallback(Some(root));
+        assert_eq!(
+            res.scope,
+            AppearanceScope::Global,
+            "one-sided vault config must fall back to global"
+        );
+        let w = res.warning.expect("warning must be set for F24 violation");
+        assert!(
+            w.contains("F24") || w.contains("fg"),
+            "warning must reference F24/fg: {w}"
+        );
+    }
+
+    // ─── A-1 対策案2: to_css_vars one-sided pair ──────────────────────────────
+
+    #[test]
+    fn one_sided_fg_emits_neither_css_var() {
+        let mut config = AppearanceConfig::default();
+        config.color.fg = Some("#1a1a1a".to_owned()); // bg 無し
+        let vars = to_css_vars(&config).unwrap();
+        assert!(
+            !vars.contains_key("--qw-fg"),
+            "one-sided fg must not be emitted"
+        );
+        assert!(!vars.contains_key("--qw-bg"));
+    }
+
+    #[test]
+    fn one_sided_bg_emits_neither_css_var() {
+        let mut config = AppearanceConfig::default();
+        config.color.bg = Some("#ffffff".to_owned()); // fg 無し
+        let vars = to_css_vars(&config).unwrap();
+        assert!(
+            !vars.contains_key("--qw-bg"),
+            "one-sided bg must not be emitted"
+        );
+        assert!(!vars.contains_key("--qw-fg"));
+    }
+
+    #[test]
+    fn valid_fg_bg_pair_emits_both_css_vars() {
+        let config = config_with_fg_bg("#1a1a1a", "#ffffff");
+        let vars = to_css_vars(&config).unwrap();
+        assert_eq!(vars.get("--qw-fg").map(|s| s.as_str()), Some("#1a1a1a"));
+        assert_eq!(vars.get("--qw-bg").map(|s| s.as_str()), Some("#ffffff"));
+    }
+
+    // ─── A-1 対策案3: fg_bg_contrast + status fail detection ───────────────────
+
+    #[test]
+    fn fg_bg_contrast_one_sided_is_fail() {
+        assert_eq!(
+            fg_bg_contrast(Some("#ffffff"), None),
+            (None, Some("fail".to_owned()))
+        );
+        assert_eq!(
+            fg_bg_contrast(None, Some("#000000")),
+            (None, Some("fail".to_owned()))
+        );
+    }
+
+    #[test]
+    fn fg_bg_contrast_none_is_null() {
+        assert_eq!(fg_bg_contrast(None, None), (None, None));
+    }
+
+    #[test]
+    fn fg_bg_contrast_valid_pair_is_aaa() {
+        let (ratio, level) = fg_bg_contrast(Some("#1a1a1a"), Some("#ffffff"));
+        assert!(ratio.expect("ratio for valid pair") >= 7.0);
+        assert_eq!(level.as_deref(), Some("AAA"));
+    }
+
+    #[test]
+    fn status_one_sided_fg_reports_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".qwert")).unwrap();
+        std::fs::write(
+            root.join(".qwert").join("appearance.toml"),
+            "[color]\nfg = \"#ffffff\"\n", // bg 欠落 → F24 違反
+        )
+        .unwrap();
+
+        let s = compute_appearance_status(Some(root));
+        assert_eq!(s.scope, AppearanceScope::Vault);
+        assert_eq!(s.fg.as_deref(), Some("#ffffff"));
+        assert_eq!(s.bg, None);
+        assert!(
+            s.contrast_ratio.is_none(),
+            "one-sided pair has no computable ratio"
+        );
+        assert_eq!(
+            s.level.as_deref(),
+            Some("fail"),
+            "F24 one-sided must surface as fail in status (§13)"
         );
     }
 

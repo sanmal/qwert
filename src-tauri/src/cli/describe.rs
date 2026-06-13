@@ -128,9 +128,9 @@ fn schema_from_cmd(cmd: &clap::Command, full_name: &str) -> CommandSchema {
         let name = if is_positional {
             id
         } else {
-            arg.get_long().map(str::to_owned).unwrap_or_else(|| {
-                arg.get_id().to_string()
-            })
+            arg.get_long()
+                .map(str::to_owned)
+                .unwrap_or_else(|| arg.get_id().to_string())
         };
 
         args.push(ArgSchema {
@@ -350,11 +350,7 @@ mod tests {
     fn file_write_has_if_match_option() {
         let schemas = build_schemas(Some("file write")).unwrap();
         let schema = &schemas[0];
-        let if_match = schema
-            .args
-            .iter()
-            .find(|a| a.name == "if-match")
-            .unwrap();
+        let if_match = schema.args.iter().find(|a| a.name == "if-match").unwrap();
         assert_eq!(if_match.kind, "option");
     }
 
@@ -396,9 +392,16 @@ mod tests {
     #[test]
     fn all_10_mcp_tools_have_a_cli_mapping() {
         let tools = [
-            "file_read", "file_write", "file_list",
-            "note_render", "note_backlinks", "note_revision", "note_scan",
-            "vault_search", "vault_status", "vault_scan",
+            "file_read",
+            "file_write",
+            "file_list",
+            "note_render",
+            "note_backlinks",
+            "note_revision",
+            "note_scan",
+            "vault_search",
+            "vault_status",
+            "vault_scan",
         ];
         for &tool in &tools {
             assert!(
@@ -416,9 +419,16 @@ mod tests {
     #[test]
     fn every_mcp_tool_mapping_resolves_to_a_schema_with_description() {
         let tools = [
-            "file_read", "file_write", "file_list",
-            "note_render", "note_backlinks", "note_revision", "note_scan",
-            "vault_search", "vault_status", "vault_scan",
+            "file_read",
+            "file_write",
+            "file_list",
+            "note_render",
+            "note_backlinks",
+            "note_revision",
+            "note_scan",
+            "vault_search",
+            "vault_status",
+            "vault_scan",
         ];
         for &tool in &tools {
             let cli_name = cli_cmd_for_mcp_tool(tool).unwrap();

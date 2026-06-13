@@ -1,9 +1,8 @@
 use std::path::PathBuf;
 
 use rmcp::{
-    ServerHandler, ServiceExt,
-    handler::server::wrapper::Parameters,
-    schemars, tool, tool_handler, tool_router,
+    handler::server::wrapper::Parameters, schemars, tool, tool_handler, tool_router, ServerHandler,
+    ServiceExt,
 };
 use serde::Deserialize;
 
@@ -250,8 +249,7 @@ impl QwertMcpServer {
         match qwert_core::vault::scan_vault(&self.vault_root) {
             Ok(entries) => {
                 if p.tree {
-                    let nodes: Vec<serde_json::Value> =
-                        entries.iter().map(entry_to_json).collect();
+                    let nodes: Vec<serde_json::Value> = entries.iter().map(entry_to_json).collect();
                     to_json_string(&make_envelope(
                         "file_tree",
                         serde_json::json!({ "tree": nodes }),
@@ -339,8 +337,7 @@ impl QwertMcpServer {
             }
         };
 
-        let date_str = (naming == NamingStyle::Date)
-            .then(crate::cli::note::today_yyyymmdd);
+        let date_str = (naming == NamingStyle::Date).then(crate::cli::note::today_yyyymmdd);
 
         let req = RevisionRequest {
             vault_root: self.vault_root.clone(),
@@ -509,13 +506,9 @@ impl ServerHandler for QwertMcpServer {
     ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
         let mut tools = Self::tool_router().list_all();
         for tool in &mut tools {
-            if let Some(cli_name) =
-                crate::cli::describe::cli_cmd_for_mcp_tool(tool.name.as_ref())
-            {
+            if let Some(cli_name) = crate::cli::describe::cli_cmd_for_mcp_tool(tool.name.as_ref()) {
                 if let Ok(schemas) = crate::cli::describe::build_schemas(Some(cli_name)) {
-                    if let Some(desc) =
-                        schemas.first().and_then(|s| s.description.as_deref())
-                    {
+                    if let Some(desc) = schemas.first().and_then(|s| s.description.as_deref()) {
                         tool.description = Some(std::borrow::Cow::Owned(desc.to_owned()));
                     }
                 }
@@ -545,7 +538,9 @@ mod tests {
     }
 
     fn read_json(server: &QwertMcpServer, path: &str) -> serde_json::Value {
-        let out = server.file_read(Parameters(FileReadParams { path: path.to_string() }));
+        let out = server.file_read(Parameters(FileReadParams {
+            path: path.to_string(),
+        }));
         serde_json::from_str(&out).expect("file_read must return valid JSON")
     }
 
